@@ -815,8 +815,12 @@ function finishTimer(){
   state.timer.accumulated=timerElapsed(); state.timer.status='stopped'; stopTick();
   const svc = serviceById(state.timer.svcIds[0]) || state.service;
   state.service = svc;
-  const initialPrice = (svc.prices&&svc.prices[0]) || null;
   const ag = state.pendingAgendamento;
+  let initialPrice = (svc.prices&&svc.prices[0]) || null;
+  if(ag && ag.valor>0){
+    const extrasDefault = state.timer.svcIds.slice(1).reduce((a,id)=>{ const sv=serviceById(id); return a+((sv&&sv.prices&&sv.prices[0])||0); },0);
+    initialPrice = Math.max(0, ag.valor-extrasDefault);
+  }
   state.draft = {
     clientId: ag?ag.clientId:null, clientName: ag?ag.clientName:'', clientWhatsapp:'', clientSearch:'', showNewClientForm:false,
     suggestion:null, lastVisitInfo:null,
@@ -973,10 +977,28 @@ function shiftAgendaDate(delta){
   const d=new Date(state.agenda.date+'T00:00:00'); d.setDate(d.getDate()+delta);
   state.agenda.date = localKey(d); render();
 }
-function resetAgendaForm(){ Object.assign(state.agenda, {clientId:null, clientName:'', clientSearch:'', showNewClientForm:false, serviceIds:[], startTime:'09:00', durationMin:60, note:'', clienteDaProfissional:false}); }
+function resetAgendaForm(){ Object.assign(state.agenda, {clientId:null, clientName:'', clientSearch:'', showNewClientForm:false, serviceIds:[], startTime:'09:00', durationMin:60, note:'', valor:'', editingId:null, editDate:null, clienteDaProfissional:false}); }
 function setClienteDaProfissional(v){ state.agenda.clienteDaProfissional=v; render(); }
 function agendaSetNote(v){ state.agenda.note=v; }
-function toggleAgendaForm(){ state.agenda.formOpen=!state.agenda.formOpen; if(state.agenda.formOpen) resetAgendaForm(); render(); }
+function agendaSetValor(v){ state.agenda.valor=v; }
+function agendaSetEditDate(v){ if(v) state.agenda.editDate=v; }
+function agendaClearClient(){ state.agenda.clientId=null; state.agenda.clientName=''; state.agenda.clientSearch=''; render(); }
+function openEditAgendamento(ag){
+  resetAgendaForm();
+  const a=state.agenda;
+  a.formOpen=true; a.editingId=ag.id; a.editDate=ag.date;
+  a.clientId=ag.clientId||null; a.clientName=ag.clientName||'';
+  a.serviceIds=(ag.serviceIds&&ag.serviceIds.length)?ag.serviceIds.slice():[ag.service].filter(Boolean);
+  a.startTime=ag.startTime; a.durationMin=Math.max(5,timeToMinutes(ag.endTime)-timeToMinutes(ag.startTime));
+  a.note=ag.note||''; a.valor=ag.valor?String(ag.valor).replace('.',','):''; a.clienteDaProfissional=!!ag.clienteDaProfissional;
+  a.selectedId=null; render();
+  try{ window.scrollTo({top:0,behavior:'smooth'}); }catch(e){}
+}
+function voltarParaAgendado(id){
+  if(state.pendingAgendamento && state.pendingAgendamento.id===id){ stopTick(); state.pendingAgendamento=null; }
+  updateAgendamento(id,{status:'agendado'}); showToast('Voltou para agendado.');
+}
+function toggleAgendaForm(){ const was=state.agenda.formOpen; state.agenda.formOpen=!was; if(state.agenda.formOpen || state.agenda.editingId) resetAgendaForm(); if(!state.agenda.formOpen) state.agenda.editingId=null; render(); }
 function toggleAgendaView(){ state.agenda.view = state.agenda.view==='grid' ? 'list' : 'grid'; state.agenda.selectedId=null; render(); }
 function selectAgendaItem(id){ state.agenda.selectedId = state.agenda.selectedId===id ? null : id; render(); }
 function openAgendaFormAt(time){ state.agenda.formOpen=true; resetAgendaForm(); state.agenda.startTime=time; render(); }
@@ -1002,11 +1024,27 @@ function saveAgendamento(){
   if(!svcs.length || !state.agenda.clientName) return;
   const svc = svcs[0];
   const endTime = addMinutesToTime(state.agenda.startTime, state.agenda.durationMin);
+  const valorNum = parseFloat(String(state.agenda.valor||'').replace(',','.'))||0;
+  if(state.agenda.editingId){
+    const noteEl=document.getElementById('ag-note');
+    const patch = {
+      date: state.agenda.editDate||state.agenda.date, startTime: state.agenda.startTime, endTime,
+      clientId: state.agenda.clientId, clientName: state.agenda.clientName,
+      service: svc.id, serviceIds: svcs.map(x=>x.id), serviceLabel: svcs.map(x=>x.label).join(' + '),
+      note: noteEl?noteEl.value:(state.agenda.note||''), valor: valorNum,
+    };
+    if(state.role==='pro') patch.clienteDaProfissional = !!state.agenda.clienteDaProfissional;
+    const id=state.agenda.editingId;
+    state.agenda.date = patch.date; state.agenda.formOpen=false; state.agenda.editingId=null; state.agenda.selectedId=id;
+    updateAgendamento(id, patch);
+    showToast('Agendamento atualizado.');
+    return;
+  }
   const rec = {
     date: state.agenda.date, startTime: state.agenda.startTime, endTime,
     clientId: state.agenda.clientId, clientName: state.agenda.clientName,
     service: svc.id, serviceIds: svcs.map(x=>x.id), serviceLabel: svcs.map(x=>x.label).join(' + '), status:'agendado', createdAt: Date.now(),
-    note: (document.getElementById('ag-note')&&document.getElementById('ag-note').value)||'',
+    note: (document.getElementById('ag-note')&&document.getElementById('ag-note').value)||'', valor: valorNum,
     bookedBy: state.role==='pro' ? 'pro' : 'owner',
     clienteDaProfissional: state.role==='pro' ? !!state.agenda.clienteDaProfissional : false,
   };
@@ -2296,6 +2334,7 @@ function renderAgendaItem(ag, detail){
     </div>
     <p class="text-sm">${ag.clientName||'(sem cliente)'} · ${ag.serviceLabel}</p>
     ${state.role!=='pro' && ag.bookedBy==='pro' ? `<p class="text-xs mt-1" style="color:var(--amber)">agendado por ${config.nomeProfissional}${ag.clienteDaProfissional?' · cliente dela (comissão)':''}</p>` : ''}
+    ${ag.valor>0 ? `<p class="text-sm mt-1">Valor combinado: <b>${fmtMoney(ag.valor)}</b></p>`:''}
     ${(detail && (ag.serviceLabel||'').includes(' + ')) ? `<p class="text-xs opacity-70 mt-1">Serviços: ${ag.serviceLabel}</p>`:''}
     ${detail ? `<p class="text-sm mt-2"><b>Observação:</b> ${ag.note ? ag.note.replace(/</g,'&lt;') : '<span class="opacity-50">nenhuma</span>'}</p>` : (ag.note?`<p class="text-xs opacity-50 mt-1">${ag.note.replace(/</g,'&lt;')}</p>`:'')}
   `;
@@ -2330,14 +2369,35 @@ function renderAgendaItem(ag, detail){
     btnRow.appendChild(faltouBtn); btnRow.appendChild(cancelBtn);
     row.appendChild(btnRow);
   }
+  if(ag.status==='em_atendimento' && (state.role!=='pro')){
+    const b2 = el('div','flex flex-wrap gap-2 mt-2');
+    const go=el('button','tap text-xs px-3 py-2 rounded-lg text-white','Continuar atendimento'); go.style.background='var(--rose)'; go.onclick=()=>startFromAgendamento(ag);
+    const back=el('button','tap text-xs px-3 py-2 rounded-lg','Voltar para agendado'); back.style.background='var(--rose-light)'; back.style.color='var(--rose-dark)'; back.onclick=()=>voltarParaAgendado(ag.id);
+    b2.appendChild(go); b2.appendChild(back); row.appendChild(b2);
+  }
+  if(state.role!=='pro' || ag.bookedBy==='pro'){
+    const ed=el('button','tap w-full text-sm py-2.5 rounded-lg mt-3','✎ Editar agendamento (horário, serviços, valor, observação)');
+    ed.style.background='var(--cream)'; ed.style.border='1px solid var(--rose-light)'; ed.style.color='var(--rose-dark)'; ed.onclick=()=>openEditAgendamento(ag);
+    row.appendChild(ed);
+  }
   return row;
 }
 
 function renderAgendaForm(){
   const form=el('div','rounded-xl p-3 bg-white shadow-sm mt-2'); form.style.border='1px solid var(--rose-light)';
+  const editing=!!state.agenda.editingId;
+  if(editing){
+    form.appendChild(el('p','text-base font-bold mb-3','Editar agendamento'));
+    const dd=el('div','mb-3'); dd.appendChild(el('p','text-xs uppercase tracking-wide opacity-50 mb-1','Dia'));
+    const di=el('input','w-full rounded-lg px-2 py-2 text-sm'); di.type='date'; di.style.border='1px solid var(--rose-light)'; di.value=state.agenda.editDate||state.agenda.date; di.onchange=(e)=>agendaSetEditDate(e.target.value);
+    dd.appendChild(di); form.appendChild(dd);
+  }
   form.appendChild(el('p','text-xs uppercase tracking-wide opacity-50 mb-2','Cliente'));
   if(state.agenda.clientName){
-    form.appendChild(el('p','text-sm mb-2','👤 selecionada: <b>'+state.agenda.clientName+'</b>'));
+    const cl=el('div','flex items-center justify-between mb-2');
+    cl.innerHTML='<span class="text-sm">👤 <b>'+state.agenda.clientName+'</b></span>';
+    const tr=el('button','tap text-xs underline opacity-70','trocar'); tr.onclick=agendaClearClient; cl.appendChild(tr);
+    form.appendChild(cl);
   } else {
     const search=el('input','w-full rounded-lg px-2 py-2 text-sm mb-2'); search.style.border='1px solid var(--rose-light)';
     search.id='ag-search'; search.placeholder='Buscar por nome...'; search.value=state.agenda.clientSearch; search.oninput=(e)=>agendaPickClientSearch(e.target.value);
@@ -2383,6 +2443,10 @@ function renderAgendaForm(){
   form.appendChild(timeRow);
   form.appendChild(el('p','text-xs opacity-50 mb-3', 'termina às '+addMinutesToTime(state.agenda.startTime, state.agenda.durationMin)+' (duração em min, ajustável)'));
 
+  form.appendChild(el('p','text-xs uppercase tracking-wide opacity-50 mb-1','Valor combinado (R$, opcional)'));
+  const valorInput=el('input','w-full rounded-lg px-2 py-2 text-sm mb-3'); valorInput.id='ag-valor'; valorInput.type='text'; valorInput.inputMode='decimal'; valorInput.style.border='1px solid var(--rose-light)';
+  valorInput.placeholder='ex.: 650'; valorInput.value=state.agenda.valor||''; valorInput.oninput=(e)=>agendaSetValor(e.target.value);
+  form.appendChild(valorInput);
   const noteInput = el('input','w-full rounded-lg px-2 py-2 text-sm mb-3');
   noteInput.id='ag-note'; noteInput.style.border='1px solid var(--rose-light)'; noteInput.placeholder='Observação (ex: forma de pagamento combinada)';
   noteInput.value = state.agenda.note||''; noteInput.oninput=(e)=>agendaSetNote(e.target.value);
@@ -2398,7 +2462,7 @@ function renderAgendaForm(){
   }
 
   if((state.agenda.serviceIds||[]).length){
-    const conflicts = findConflicts(state.agenda.date, state.agenda.startTime, state.agenda.durationMin);
+    const conflicts = findConflicts(state.agenda.editDate||state.agenda.date, state.agenda.startTime, state.agenda.durationMin, state.agenda.editingId);
     if(conflicts.length){
       const warn=el('div','rounded-lg p-2 mb-3 text-xs'); warn.style.background='var(--danger-light)'; warn.style.color='var(--danger)';
       warn.textContent = 'Atenção: bate com ' + conflicts.map(c=>c.clientName+' ('+c.startTime+'–'+c.endTime+')').join(', ');
@@ -2406,7 +2470,7 @@ function renderAgendaForm(){
     }
   }
 
-  form.appendChild(bigButton('Salvar agendamento','var(--rose)',saveAgendamento));
+  form.appendChild(bigButton(editing?'Salvar alterações':'Salvar agendamento','var(--rose)',saveAgendamento));
   const cancelBtn=el('button','tap w-full text-center py-2 text-sm opacity-60 mt-1','cancelar'); cancelBtn.onclick=toggleAgendaForm;
   form.appendChild(cancelBtn);
   return form;
@@ -2477,9 +2541,10 @@ function renderAgenda(){
 
   const dayItems = agendamentos.filter(a=>a.date===state.agenda.date && a.status!=='cancelado').sort((a,b)=>timeToMinutes(a.startTime)-timeToMinutes(b.startTime));
 
+  if(state.agenda.formOpen && state.agenda.editingId){ wrap.appendChild(renderAgendaForm()); }
   if(state.agenda.view==='grid'){
     const sel = state.agenda.selectedId ? agendamentos.find(a=>a.id===state.agenda.selectedId) : null;
-    if(sel){ wrap.appendChild(el('p','text-xs uppercase tracking-wide mb-2','Detalhes do agendamento (toque de novo no horário para fechar)')); wrap.appendChild(renderAgendaItem(sel,true)); }
+    if(sel && !state.agenda.editingId){ wrap.appendChild(el('p','text-xs uppercase tracking-wide mb-2','Detalhes do agendamento (toque de novo no horário para fechar)')); wrap.appendChild(renderAgendaItem(sel,true)); }
     wrap.appendChild(renderAgendaGrid(dayItems));
   } else {
     if(!dayItems.length) wrap.appendChild(el('p','text-sm opacity-60 mb-4','Nenhum agendamento nesse dia.'));
@@ -2489,7 +2554,9 @@ function renderAgenda(){
   viewBtn.onclick=toggleAgendaView;
   wrap.appendChild(viewBtn);
 
-  if(!state.agenda.formOpen){
+  if(state.agenda.formOpen && state.agenda.editingId){
+    // formulário de edição já está no topo
+  } else if(!state.agenda.formOpen){
     const addBtn=el('button','tap w-full text-center py-3 rounded-xl text-sm font-medium mt-1','+ Agendar');
     addBtn.style.background='var(--rose)'; addBtn.style.color='white'; addBtn.onclick=toggleAgendaForm;
     wrap.appendChild(addBtn);
