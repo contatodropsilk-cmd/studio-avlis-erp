@@ -87,6 +87,28 @@ const SERVICES = [
   {id:'henna',        label:'Henna',                       cat:'Sobrancelhas e cílios', prices:[27], estimatedMin:20},
   {id:'outro',        label:'Outro serviço',                cat:'Outro', prices:[], estimatedMin:60},
 ];
+const SERVICES_BASE = SERVICES.map(x=>JSON.parse(JSON.stringify(x)));
+let __svcCfgKey = '';
+function applyServiceConfig(){
+  const ed = (typeof config!=='undefined' && config.servicosEdit) || {};
+  const nv = (typeof config!=='undefined' && config.servicosNovos) || [];
+  const key = JSON.stringify([ed,nv]);
+  if(key===__svcCfgKey) return; __svcCfgKey=key;
+  const out = SERVICES_BASE.map(b=>{
+    const x = JSON.parse(JSON.stringify(b)); const e = ed[b.id];
+    if(e){
+      if(e.label) x.label=e.label;
+      if(Array.isArray(e.prices)) x.prices=e.prices;
+      if(e.estimatedMin>0) x.estimatedMin=e.estimatedMin;
+      if(e.defaultPartner!==undefined && e.defaultPartner!==null) x.defaultPartner=e.defaultPartner;
+    }
+    return x;
+  });
+  const outro = out.findIndex(x=>x.id==='outro');
+  const extras = nv.map(n=>({id:n.id, label:n.label, cat:n.cat||'Outro', prices:n.prices||[], estimatedMin:n.estimatedMin||60, custom:true}));
+  if(outro>=0) out.splice(outro,0,...extras); else out.push(...extras);
+  SERVICES.length=0; out.forEach(x=>SERVICES.push(x));
+}
 const COST_CHIPS = [0,10,20,30,50,70,100,150];
 const DEFAULT_CONFIG = {
   custosFixos:1315, metaMin:4000, metaMax:5000, retiradaMin:2000, retiradaMax:3000,
@@ -99,6 +121,8 @@ const DEFAULT_CONFIG = {
   nomeProfissional: 'Profissional', comissaoProfissionalPercent: 30,
   donaPin: '0810',
   lastBackupAt: 0,
+  servicosEdit: {},
+  servicosNovos: [],
   padroesInsumo: {},
   whatsappProfissional: '',
   cobrarInsumosClientesDela: true,
@@ -691,8 +715,30 @@ function timerElapsed(){ let ms=state.timer.accumulated; if(state.timer.status==
 function startTick(){ stopTick(); state.tickHandle=setInterval(()=>{ const e=document.getElementById('timer-display'); if(e) e.textContent=fmtClock(timerElapsed()); },500); }
 function stopTick(){ if(state.tickHandle){ clearInterval(state.tickHandle); state.tickHandle=null; } }
 
-function freshTimer(){ return {status:'idle',startedAt:null,accumulated:0,stockUsage:[],insumoSelectedId:null,insumoQty:'',showInsumoForm:false,proOwnClient:false,proPrice:'',proClientName:'',proPriceError:false}; }
-function pickService(svc){ state.service=svc; state.timer=freshTimer(); state.screen='timer'; render(); }
+function freshTimer(){ return {svcIds:[],activeSvc:null,svcMs:{},segStart:0,showAddSvc:false,status:'idle',startedAt:null,accumulated:0,stockUsage:[],insumoSelectedId:null,insumoQty:'',showInsumoForm:false,proOwnClient:false,proPrice:'',proClientName:'',proPriceError:false}; }
+function pickService(svc, allIds){
+  state.service=svc; state.timer=freshTimer();
+  state.timer.svcIds = (allIds && allIds.length) ? allIds.slice() : [svc.id];
+  state.timer.activeSvc = svc.id;
+  state.screen='timer'; render();
+}
+function closeSegment(){
+  const t=state.timer; if(t.status==='idle' || !t.activeSvc) return;
+  const now=timerElapsed(); t.svcMs[t.activeSvc]=(t.svcMs[t.activeSvc]||0)+Math.max(0,now-t.segStart); t.segStart=now;
+}
+function switchTimerService(id){
+  const t=state.timer; if(t.activeSvc===id) return;
+  closeSegment();
+  if(!t.svcIds.includes(id)) t.svcIds.push(id);
+  t.activeSvc=id; render();
+}
+function toggleAddSvc(){ state.timer.showAddSvc=!state.timer.showAddSvc; render(); }
+function timerServicesInfo(){
+  const t=state.timer;
+  return t.svcIds.map(id=>{ const sv=serviceById(id)||{id,label:id,prices:[]}; return {id, svc:sv, min:Math.round((t.svcMs[id]||0)/60000)}; });
+}
+function timerServicesLabel(){ return timerServicesInfo().map(x=>x.svc.label).join(' + '); }
+function timerServicosRecord(){ return timerServicesInfo().map(x=>({id:x.id,label:x.svc.label,min:x.min})); }
 function setProOwnClient(v){ state.timer.proOwnClient=v; state.timer.proPriceError=false; render(); }
 function setProPrice(v){ state.timer.proPrice=v; if(state.timer.proPriceError){ state.timer.proPriceError=false; const e=document.getElementById('pro-price-error'); if(e) e.remove(); } }
 function setProClientName(v){ state.timer.proClientName=v; }
@@ -709,6 +755,7 @@ function addInsumoDuringService(){
 }
 function removeInsumoDuringService(i){ state.timer.stockUsage.splice(i,1); render(); }
 function finishTimerPro(){
+  closeSegment();
   stopTick();
   const accumulated = timerElapsed();
   const svc = state.service;
@@ -719,7 +766,7 @@ function finishTimerPro(){
   const proPrice = parseFloat(String(state.timer.proPrice||'').replace(',','.'))||0;
   if(proOwnClient && !(proPrice>0)){ state.timer.proPriceError=true; render(); return; }
   const rec = {
-    service:svc.id, serviceLabel:svc.label, cat:svc.cat,
+    service:svc.id, serviceLabel:timerServicesLabel()||svc.label, servicos:timerServicosRecord(), cat:svc.cat,
     clientId:null, clientName: proOwnClient ? (state.timer.proClientName||'').trim() : '',
     proOwnClient, proPrice: proOwnClient ? proPrice : 0,
     startedAt: Date.now()-accumulated, endedAt: Date.now(), durationMin,
@@ -735,12 +782,14 @@ function finishTimerPro(){
     savedToast('Atendimento salvo');
   });
 }
-function startTimer(){ state.timer.status='running'; state.timer.startedAt=Date.now(); startTick(); render(); }
-function pauseTimer(){ state.timer.accumulated=timerElapsed(); state.timer.status='paused'; state.timer.startedAt=null; stopTick(); render(); }
-function resumeTimer(){ state.timer.status='running'; state.timer.startedAt=Date.now(); startTick(); render(); }
+function startTimer(){ state.timer.status='running'; state.timer.startedAt=Date.now(); state.timer.segStart=timerElapsed(); startTick(); render(); }
+function pauseTimer(){ closeSegment(); state.timer.accumulated=timerElapsed(); state.timer.status='paused'; state.timer.startedAt=null; stopTick(); render(); }
+function resumeTimer(){ state.timer.status='running'; state.timer.startedAt=Date.now(); state.timer.segStart=timerElapsed(); startTick(); render(); }
 function finishTimer(){
+  closeSegment();
   state.timer.accumulated=timerElapsed(); state.timer.status='stopped'; stopTick();
-  const svc = state.service;
+  const svc = serviceById(state.timer.svcIds[0]) || state.service;
+  state.service = svc;
   const initialPrice = (svc.prices&&svc.prices[0]) || null;
   const ag = state.pendingAgendamento;
   state.draft = {
@@ -752,6 +801,7 @@ function finishTimer(){
     paymentMethod:null, extraItems:[], extraLabel:'', extraPrice:'',
     stockUsage: state.timer.stockUsage.slice(), stockUsageSelectedId:null, stockUsageQty:'',
   };
+  state.timer.svcIds.slice(1).forEach(id=>{ const sv=serviceById(id); if(sv) state.draft.extraItems.push({label:sv.label, price:(sv.prices&&sv.prices[0])||0}); });
   if(ag && ag.clientId){
     const c = clients.find(c=>c.id===ag.clientId);
     state.draft.suggestion = getSuggestion({id:ag.clientId}, records);
@@ -831,7 +881,7 @@ function confirmSave(){
   const extraTotal=extraItemsTotal();
   const items=[{label:svc.label, price:mainPrice}].concat(state.draft.extraItems);
   const rec = {
-    service:svc.id, serviceLabel:svc.label, cat:svc.cat,
+    service:svc.id, serviceLabel:timerServicesLabel()||svc.label, servicos:timerServicosRecord(), cat:svc.cat,
     clientId:state.draft.clientId, clientName:state.draft.clientName,
     startedAt:Date.now()-state.timer.accumulated, endedAt:Date.now(), durationMin,
     price: mainPrice+extraTotal, items, paymentMethod: state.draft.paymentMethod,
@@ -997,21 +1047,24 @@ function lembreteMsg(ag){
 }
 function marcarFaltou(id){ setAgendamentoStatus(id,'faltou'); }
 function startFromAgendamento(ag){
-  const svc = serviceById(ag.service);
+  const ids = (ag.serviceIds && ag.serviceIds.length) ? ag.serviceIds : [ag.service];
+  const svc = serviceById(ids[0]) || serviceById(ag.service);
   state.pendingAgendamento = ag;
   if(db && !usingLocal){ db.collection('agendamentos').doc(ag.id).update({status:'em_atendimento'}).catch(()=>{}); }
   ag.status='em_atendimento';
-  pickService(svc);
+  pickService(svc, ids);
 }
 
 // ---------- render ----------
-const MAIN_SCREENS = ['home','agenda','clients','finance','reports','history','marketing','estoque','insumos-padrao','fechamento'];
+const MAIN_SCREENS = ['servicos','home','agenda','clients','finance','reports','history','marketing','estoque','insumos-padrao','fechamento'];
 const PRO_SCREENS = ['pro-home','pro-agenda'];
 function goEstoque(){ state.screen='estoque'; render(); }
 function goInsumosPadrao(){ state.screen='insumos-padrao'; render(); }
 function goFechamento(){ state.screen='fechamento'; render(); }
+function goServicos(){ state.screen='servicos'; render(); }
 function goProHome(){ state.screen='pro-home'; render(); }
 function render(){
+  applyServiceConfig();
   const app=document.getElementById('app');
   const ae=document.activeElement; const keepId=(ae && ae.id && ae.tagName==='INPUT' && ae.id!=='pin-input')?ae.id:null;
   let selS=0, selE=0; if(keepId){ try{ selS=ae.selectionStart; selE=ae.selectionEnd; }catch(e){} }
@@ -1029,6 +1082,7 @@ function render(){
   else if(state.screen==='estoque') app.appendChild(renderEstoqueScreen());
   else if(state.screen==='insumos-padrao') app.appendChild(renderInsumosPadrao());
   else if(state.screen==='fechamento') app.appendChild(renderFechamento());
+  else if(state.screen==='servicos') app.appendChild(renderServicos());
   else if(state.screen==='pro-home') app.appendChild(renderProHome());
   else if(state.screen==='pro-agenda') app.appendChild(renderAgenda());
   else if(state.screen==='loading') app.appendChild(renderLoading());
@@ -1318,7 +1372,26 @@ function renderPickService(){
 function renderTimer(){
   const wrap=el('div','text-center');
   wrap.appendChild(backButton(cancelFlow));
-  wrap.appendChild(el('p','text-sm opacity-60 mb-1', state.service.label));
+  wrap.appendChild(el('p','text-xs opacity-60 mb-2', state.timer.svcIds.length>1 ? 'Toque no serviço que está fazendo agora' : 'Serviço'));
+  const svcRow=el('div','flex flex-wrap justify-center gap-2');
+  timerServicesInfo().forEach(x=>{
+    const on = state.timer.activeSvc===x.id;
+    const c=el('button','tap chip px-3 py-2 rounded-full text-sm shadow-sm', (on?'▶ ':'')+x.svc.label+(x.min>0?' · '+x.min+' min':''));
+    c.style.border='1px solid var(--rose-light)'; c.style.background = on ? 'var(--rose)' : '#fff'; c.style.color = on ? '#fff' : 'var(--ink)';
+    c.onclick=()=>switchTimerService(x.id);
+    svcRow.appendChild(c);
+  });
+  wrap.appendChild(svcRow);
+  const addSvcBtn=el('button','tap text-xs underline opacity-70 mt-2', state.timer.showAddSvc ? 'fechar' : '+ outro serviço neste atendimento'); addSvcBtn.onclick=toggleAddSvc; wrap.appendChild(addSvcBtn);
+  if(state.timer.showAddSvc){
+    const g=el('div','grid grid-cols-2 gap-1 mt-2 text-left');
+    SERVICES.filter(sv=>!state.timer.svcIds.includes(sv.id)).forEach(sv=>{
+      const b=el('button','tap text-xs rounded-lg px-2 py-2', sv.label); b.style.background='var(--cream)';
+      b.onclick=()=>{ state.timer.showAddSvc=false; switchTimerService(sv.id); };
+      g.appendChild(b);
+    });
+    wrap.appendChild(g);
+  }
   const display=el('div','digits text-6xl font-bold my-8'); display.id='timer-display';
   display.style.color='var(--rose-dark)'; display.textContent=fmtClock(timerElapsed());
   wrap.appendChild(display);
@@ -1443,7 +1516,8 @@ function renderFinishClient(){
 function renderFinishDetails(){
   const wrap=el('div');
   const svc = state.service;
-  wrap.appendChild(el('h2','text-xl font-bold mb-1', svc.label));
+  wrap.appendChild(el('h2','text-xl font-bold mb-1', timerServicesLabel()||svc.label));
+  if(timerServicesInfo().length>1) wrap.appendChild(el('p','text-xs opacity-60 mb-2', timerServicesInfo().map(x=>x.svc.label+': '+x.min+' min').join(' · ')+' — o valor de cada serviço extra está na comanda abaixo.'));
   if(state.draft.clientName) wrap.appendChild(el('p','text-sm opacity-70 mb-1','👤 '+state.draft.clientName));
   if(state.draft.lastVisitInfo) wrap.appendChild(el('p','text-xs opacity-50 mb-3', state.draft.lastVisitInfo));
   if(state.draft.suggestion){
@@ -1835,6 +1909,10 @@ function renderFinance(){
   fechLink.style.background='var(--rose-light)'; fechLink.onclick=goFechamento;
   wrap.appendChild(fechLink);
 
+  const svLink = el('button','tap w-full text-center py-2.5 rounded-xl text-sm font-medium mt-2', 'Serviços e valores →');
+  svLink.style.background='var(--rose-light)'; svLink.style.color='var(--rose-dark)'; svLink.onclick=goServicos;
+  wrap.appendChild(svLink);
+
   const bk = el('div','rounded-2xl p-4 mt-4 bg-white shadow-sm'); bk.style.border='1px solid var(--rose-light)';
   const when = config.lastBackupAt ? 'Último backup: '+fmtDateLabel(todayKey(config.lastBackupAt)) : 'Você ainda não fez backup.';
   bk.innerHTML = `<p class="text-sm font-semibold mb-1">Backup dos dados</p><p class="text-xs opacity-60 mb-3">${when} Baixe o arquivo e guarde no Google Drive ou no e-mail.</p>`;
@@ -1844,6 +1922,83 @@ function renderFinance(){
   bkRow.appendChild(b1); bkRow.appendChild(b2); bk.appendChild(bkRow);
   wrap.appendChild(bk);
   if(AUTH_MODE) wrap.appendChild(renderAcessoCard());
+  return wrap;
+}
+
+function parsePrices(txt){
+  return String(txt||'').split(/[;\/\s]+/).map(x=>parseFloat(x.replace(',','.'))).filter(x=>x>0);
+}
+function saveServicos(){
+  const g=id=>{ const e=document.getElementById(id); return e?e.value:''; };
+  const ed={};
+  SERVICES_BASE.forEach(b=>{
+    const label=g('sv-label-'+b.id).trim()||b.label;
+    const prices=parsePrices(g('sv-prices-'+b.id));
+    const min=parseInt(g('sv-min-'+b.id))||b.estimatedMin;
+    const partTxt=g('sv-part-'+b.id).trim();
+    const entry={};
+    if(label!==b.label) entry.label=label;
+    if(JSON.stringify(prices)!==JSON.stringify(b.prices||[])) entry.prices=prices;
+    if(min!==b.estimatedMin) entry.estimatedMin=min;
+    if(partTxt!==''){ const v=parseFloat(partTxt.replace(',','.')); if(!isNaN(v) && v!==(b.defaultPartner||0)) entry.defaultPartner=v; }
+    if(Object.keys(entry).length) ed[b.id]=entry;
+  });
+  const novos=(config.servicosNovos||[]).map(n=>({
+    ...n, label:g('svn-label-'+n.id).trim()||n.label, prices:parsePrices(g('svn-prices-'+n.id)), estimatedMin:parseInt(g('svn-min-'+n.id))||n.estimatedMin
+  }));
+  const nn=g('sv-new-label').trim();
+  if(nn){ novos.push({id:'x_'+Date.now().toString(36), label:nn, cat:'Outro', prices:parsePrices(g('sv-new-prices')), estimatedMin:parseInt(g('sv-new-min'))||60}); }
+  saveConfig({servicosEdit:ed, servicosNovos:novos});
+  showToast('Serviços e valores salvos.');
+}
+function removeServicoNovo(id){
+  if(!confirm('Remover esse serviço da lista? Atendimentos já feitos continuam no histórico.')) return;
+  saveConfig({servicosNovos:(config.servicosNovos||[]).filter(n=>n.id!==id)});
+}
+function resetServicosEdit(){
+  if(!confirm('Voltar todos os valores e tempos para o padrão original?')) return;
+  saveConfig({servicosEdit:{}}); showToast('Valores originais restaurados.');
+}
+function renderServicos(){
+  const wrap=el('div');
+  wrap.appendChild(backButton(goFinance));
+  wrap.appendChild(el('h2','text-xl font-bold mb-1','Serviços e valores'));
+  wrap.appendChild(el('p','text-xs opacity-60 mb-4','Ajuste os valores que você pratica hoje. Em “Valores”, separe por espaço (ex.: 80 100 120.50 ou 37,50). O primeiro é o sugerido ao finalizar; os outros viram botões rápidos. Só vale para atendimentos novos.'));
+  const inputStyle='width:100%;padding:8px 10px;border-radius:10px;border:1px solid var(--rose-light);font-size:15px;background:#fff';
+  const field=(label,id,val,type,ph)=>{
+    const d=el('div','mb-2'); d.appendChild(el('p','text-xs opacity-60 mb-1',label));
+    const i=el('input'); i.id=id; i.value=val; i.style.cssText=inputStyle; if(type==='num'){ i.type='text'; i.inputMode='decimal'; } if(ph) i.placeholder=ph;
+    d.appendChild(i); return d;
+  };
+  const groups={};
+  SERVICES.forEach(sv=>{ (groups[sv.cat]=groups[sv.cat]||[]).push(sv); });
+  Object.keys(groups).forEach(cat=>{
+    wrap.appendChild(el('p','text-xs uppercase tracking-wide opacity-60 mb-2 mt-4',cat));
+    groups[cat].forEach(sv=>{
+      const card=el('div','rounded-2xl p-3 mb-2 bg-white shadow-sm'); card.style.border='1px solid var(--hairline)';
+      const isNovo=!!sv.custom;
+      const pre=isNovo?'svn-':'sv-';
+      card.appendChild(field('Nome',pre+'label-'+sv.id,sv.label));
+      const row=el('div','flex gap-2');
+      const f1=field('Valores (R$)',pre+'prices-'+sv.id,(sv.prices||[]).map(p=>String(p).replace('.',',')).join(' '),'num', sv.commissionType==='percent40'?'definido a cada atendimento':'ex.: 80 100'); f1.style.flex='2'; row.appendChild(f1);
+      const f2=field('Tempo (min)',pre+'min-'+sv.id,sv.estimatedMin,'num'); f2.style.flex='1'; row.appendChild(f2);
+      card.appendChild(row);
+      if(!isNovo && sv.cat==='Cabelo' && sv.commissionType!=='percent40'){
+        card.appendChild(field('Custo padrão com parceira (R$, opcional)','sv-part-'+sv.id,sv.defaultPartner||'','num'));
+      } else if(!isNovo){ const h=el('input'); h.type='hidden'; h.id='sv-part-'+sv.id; h.value=sv.defaultPartner!==undefined?sv.defaultPartner:''; card.appendChild(h); }
+      if(isNovo){ const rm=el('button','tap text-xs underline mt-1','remover este serviço'); rm.style.color='var(--danger)'; rm.onclick=()=>removeServicoNovo(sv.id); card.appendChild(rm); }
+      wrap.appendChild(card);
+    });
+  });
+  wrap.appendChild(el('p','text-xs uppercase tracking-wide opacity-60 mb-2 mt-4','Novo serviço (opcional)'));
+  const nc=el('div','rounded-2xl p-3 mb-3 bg-white shadow-sm'); nc.style.border='1px dashed var(--rose-light)';
+  nc.appendChild(field('Nome','sv-new-label',''));
+  const nr=el('div','flex gap-2');
+  const n1=field('Valores (R$)','sv-new-prices','','num','ex.: 90'); n1.style.flex='2'; nr.appendChild(n1);
+  const n2=field('Tempo (min)','sv-new-min','','num','60'); n2.style.flex='1'; nr.appendChild(n2);
+  nc.appendChild(nr); wrap.appendChild(nc);
+  wrap.appendChild(bigButton('Salvar serviços e valores','var(--rose)',saveServicos));
+  const rs=el('button','tap w-full text-xs underline opacity-60 mt-3','voltar tudo ao padrão original'); rs.onclick=resetServicosEdit; wrap.appendChild(rs);
   return wrap;
 }
 
