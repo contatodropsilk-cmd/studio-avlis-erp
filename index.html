@@ -91,6 +91,10 @@ const DEFAULT_CONFIG = {
   rotinaAvisoDias: 5,
   nomeProfissional: 'Profissional', comissaoProfissionalPercent: 30,
   donaPin: '0810',
+  padroesInsumo: {},
+  whatsappProfissional: '',
+  cobrarInsumosClientesDela: true,
+  lembreteDiaTemplate: 'Oi {nome}! Passando pra lembrar do seu horário {dia} às {hora} ({servico}) aqui no Studio Avlis 💕 Me confirma?',
 };
 const PAYMENT_METHODS = ['Dinheiro','Cartão débito','Cartão crédito','Pix','Outro'];
 
@@ -497,7 +501,11 @@ function timerElapsed(){ let ms=state.timer.accumulated; if(state.timer.status==
 function startTick(){ stopTick(); state.tickHandle=setInterval(()=>{ const e=document.getElementById('timer-display'); if(e) e.textContent=fmtClock(timerElapsed()); },500); }
 function stopTick(){ if(state.tickHandle){ clearInterval(state.tickHandle); state.tickHandle=null; } }
 
-function pickService(svc){ state.service=svc; state.timer={status:'idle',startedAt:null,accumulated:0,stockUsage:[],insumoSelectedId:null,insumoQty:'',showInsumoForm:false}; state.screen='timer'; render(); }
+function freshTimer(){ return {status:'idle',startedAt:null,accumulated:0,stockUsage:[],insumoSelectedId:null,insumoQty:'',showInsumoForm:false,proOwnClient:false,proPrice:'',proClientName:'',proPriceError:false}; }
+function pickService(svc){ state.service=svc; state.timer=freshTimer(); state.screen='timer'; render(); }
+function setProOwnClient(v){ state.timer.proOwnClient=v; state.timer.proPriceError=false; render(); }
+function setProPrice(v){ state.timer.proPrice=v; if(state.timer.proPriceError){ state.timer.proPriceError=false; const e=document.getElementById('pro-price-error'); if(e) e.remove(); } }
+function setProClientName(v){ state.timer.proClientName=v; }
 function toggleInsumoForm(){ state.timer.showInsumoForm=!state.timer.showInsumoForm; render(); }
 function setInsumoSelected(id){ state.timer.insumoSelectedId=id; render(); }
 function setInsumoQty(v){ state.timer.insumoQty=v; }
@@ -517,9 +525,13 @@ function finishTimerPro(){
   const durationMin = Math.round(accumulated/60000);
   const stockUsage = state.timer.stockUsage.slice();
   const productCost = stockUsage.reduce((a,u)=>a+(u.custo||0),0);
+  const proOwnClient = !!state.timer.proOwnClient;
+  const proPrice = parseFloat(String(state.timer.proPrice||'').replace(',','.'))||0;
+  if(proOwnClient && !(proPrice>0)){ state.timer.proPriceError=true; render(); return; }
   const rec = {
     service:svc.id, serviceLabel:svc.label, cat:svc.cat,
-    clientId:null, clientName:'',
+    clientId:null, clientName: proOwnClient ? (state.timer.proClientName||'').trim() : '',
+    proOwnClient, proPrice: proOwnClient ? proPrice : 0,
     startedAt: Date.now()-accumulated, endedAt: Date.now(), durationMin,
     price:0, items:[{label:svc.label, price:0}], paymentMethod:null,
     productCost, partnerCost:0, stockUsage, performedBy:'pro', note:'',
@@ -528,7 +540,7 @@ function finishTimerPro(){
   stockUsage.forEach(u=>registrarUsoEstoque(u.estoqueItemId, u.qty));
   saveRecord(rec, ()=>{
     state.service=null;
-    state.timer={status:'idle',startedAt:null,accumulated:0,stockUsage:[],insumoSelectedId:null,insumoQty:'',showInsumoForm:false};
+    state.timer=freshTimer();
     state.screen='pro-home'; render();
   });
 }
@@ -768,6 +780,21 @@ function cancelAgendamento(id){
   deleteAgendamentoFromGoogle(a);
 }
 function confirmAgendamento(id){ setAgendamentoStatus(id,'confirmado'); }
+function updateAgendamento(id, patch){
+  if(db && !usingLocal){ db.collection('agendamentos').doc(id).update(patch).catch(()=>{}); }
+  const a=agendamentos.find(a=>a.id===id); if(a){ Object.assign(a,patch); if(usingLocal) saveLocalAgendamentos(); }
+  render();
+}
+function diaLabel(dateStr){
+  const today=todayKeyNow(); const t=new Date(); t.setDate(t.getDate()+1); const tomorrow=t.toISOString().slice(0,10);
+  if(dateStr===today) return 'hoje';
+  if(dateStr===tomorrow) return 'amanhã';
+  return 'dia '+fmtDateLabel(dateStr).slice(0,5);
+}
+function lembreteMsg(ag){
+  const tpl = config.lembreteDiaTemplate || DEFAULT_CONFIG.lembreteDiaTemplate;
+  return tpl.replace('{nome}',(ag.clientName||'').split(' ')[0]).replace('{dia}',diaLabel(ag.date)).replace('{hora}',ag.startTime).replace('{servico}',ag.serviceLabel);
+}
 function marcarFaltou(id){ setAgendamentoStatus(id,'faltou'); }
 function startFromAgendamento(ag){
   const svc = serviceById(ag.service);
@@ -778,9 +805,11 @@ function startFromAgendamento(ag){
 }
 
 // ---------- render ----------
-const MAIN_SCREENS = ['home','agenda','clients','finance','reports','history','marketing','estoque'];
+const MAIN_SCREENS = ['home','agenda','clients','finance','reports','history','marketing','estoque','insumos-padrao','fechamento'];
 const PRO_SCREENS = ['pro-home','pro-agenda'];
 function goEstoque(){ state.screen='estoque'; render(); }
+function goInsumosPadrao(){ state.screen='insumos-padrao'; render(); }
+function goFechamento(){ state.screen='fechamento'; render(); }
 function goProHome(){ state.screen='pro-home'; render(); }
 function render(){
   const app=document.getElementById('app'); app.innerHTML='';
@@ -795,6 +824,8 @@ function render(){
   else if(state.screen==='reports') app.appendChild(renderReports());
   else if(state.screen==='marketing') app.appendChild(renderMarketing());
   else if(state.screen==='estoque') app.appendChild(renderEstoqueScreen());
+  else if(state.screen==='insumos-padrao') app.appendChild(renderInsumosPadrao());
+  else if(state.screen==='fechamento') app.appendChild(renderFechamento());
   else if(state.screen==='pro-home') app.appendChild(renderProHome());
   else if(state.screen==='pro-agenda') app.appendChild(renderAgenda());
   else if(state.screen==='pin-lock'){
@@ -1058,6 +1089,28 @@ function renderTimer(){
   else if(status==='running'){ btnRow.appendChild(bigButton('Pausar','var(--muted)',pauseTimer)); btnRow.appendChild(bigButton('Finalizar atendimento','var(--green)', state.role==='pro'?finishTimerPro:finishTimer)); }
   else if(status==='paused'){ btnRow.appendChild(bigButton('Continuar','var(--rose)',resumeTimer)); btnRow.appendChild(bigButton('Finalizar atendimento','var(--green)', state.role==='pro'?finishTimerPro:finishTimer)); }
   wrap.appendChild(btnRow);
+
+  if(state.role==='pro'){
+    const own = el('div','text-left mt-6 pt-5'); own.style.borderTop='1px solid var(--hairline)';
+    own.appendChild(el('p','text-sm font-semibold mb-2','De quem é essa cliente?'));
+    const chips = el('div','flex gap-2 mb-2');
+    [[false,'Cliente do studio'],[true,'Cliente minha']].forEach(([v,label])=>{
+      const c=el('button','tap chip px-3 py-2 rounded-full bg-white text-xs shadow-sm', label); c.style.border='1px solid var(--hairline)';
+      if(!!state.timer.proOwnClient===v) c.classList.add('active');
+      c.onclick=()=>setProOwnClient(v);
+      chips.appendChild(c);
+    });
+    own.appendChild(chips);
+    if(state.timer.proOwnClient){
+      const nameIn=el('input','w-full rounded-lg px-2 py-2 text-sm mb-2'); nameIn.placeholder='Nome da cliente (opcional)'; nameIn.value=state.timer.proClientName||''; nameIn.oninput=(e)=>setProClientName(e.target.value);
+      own.appendChild(nameIn);
+      const priceIn=el('input','w-full rounded-lg px-2 py-2 text-sm'); priceIn.type='number'; priceIn.inputMode='decimal'; priceIn.placeholder='Quanto você cobrou (R$)'; priceIn.value=state.timer.proPrice||''; priceIn.oninput=(e)=>setProPrice(e.target.value);
+      own.appendChild(priceIn);
+      if(state.timer.proPriceError){ const er=el('p','text-xs mt-1','Coloca o valor que você cobrou pra finalizar.'); er.id='pro-price-error'; er.style.color='var(--danger)'; own.appendChild(er); }
+      own.appendChild(el('p','text-xs opacity-50 mt-1',`O studio fica com ${config.comissaoProfissionalPercent}% de comissão.`));
+    }
+    wrap.appendChild(own);
+  }
 
   if(estoque.length){
     const insumoWrap = el('div','text-left mt-6 pt-5'); insumoWrap.style.borderTop='1px solid var(--hairline)';
@@ -1539,6 +1592,9 @@ function renderFinance(){
   const estoqueLink = el('button','tap w-full text-center py-2.5 rounded-xl text-sm font-medium mt-1', iconLabel('box','Ver estoque de produtos →','var(--rose-dark)'));
   estoqueLink.style.background='var(--rose-light)'; estoqueLink.onclick=goEstoque;
   wrap.appendChild(estoqueLink);
+  const fechLink = el('button','tap w-full text-center py-2.5 rounded-xl text-sm font-medium mt-2', iconLabel('wallet','Fechamento com '+config.nomeProfissional+' →','var(--rose-dark)'));
+  fechLink.style.background='var(--rose-light)'; fechLink.onclick=goFechamento;
+  wrap.appendChild(fechLink);
   return wrap;
 }
 
@@ -1546,6 +1602,11 @@ function renderEstoqueScreen(){
   const wrap=el('div');
   wrap.appendChild(backButton(goHome));
   wrap.appendChild(el('h2','text-xl font-bold mb-1','Estoque'));
+  const padraoLink = el('button','tap w-full text-center py-2.5 rounded-xl text-sm font-medium mb-3', iconLabel('box','Padrão de insumos por serviço →','var(--rose-dark)'));
+  padraoLink.style.background='var(--rose-light)'; padraoLink.onclick=goInsumosPadrao;
+  const nAlert = computeInsumoDesvios().length;
+  if(nAlert){ padraoLink.innerHTML += ` <span class="badge badge-warn">${nAlert} acima do padrão</span>`; }
+  wrap.appendChild(padraoLink);
   wrap.appendChild(renderEstoqueSection());
   return wrap;
 }
@@ -1619,6 +1680,181 @@ function renderEstoqueSection(){
   return wrap;
 }
 
+
+// ---------- padrão de insumos ----------
+function custoUnit(itemId){ const it=estoque.find(e=>e.id===itemId); return it && it.quantidadeTotal>0 ? (it.valorPago||0)/it.quantidadeTotal : 0; }
+function insumoStats(days){
+  const since = Date.now()-(days||30)*86400000;
+  const stats = {};
+  records.filter(r=>(r.startedAt||r.createdAt)>=since && r.stockUsage && r.stockUsage.length).forEach(r=>{
+    const who = r.performedBy==='pro' ? 'pro' : 'owner';
+    const s = stats[r.service] || (stats[r.service]={serviceId:r.service, label:r.serviceLabel, items:{}});
+    const perItem = {};
+    r.stockUsage.forEach(u=>{ const k=u.estoqueItemId||u.nome; perItem[k]=perItem[k]||{nome:u.nome, unidade:u.unidade, qty:0}; perItem[k].qty+=u.qty||0; });
+    Object.entries(perItem).forEach(([k,v])=>{
+      const it = s.items[k] || (s.items[k]={id:k, nome:v.nome, unidade:v.unidade, owner:{sum:0,n:0}, pro:{sum:0,n:0}});
+      it[who].sum+=v.qty; it[who].n+=1;
+    });
+  });
+  return stats;
+}
+function padraoDe(serviceId, itemId){ const p=(config.padroesInsumo||{})[serviceId]; return p && p[itemId] ? p[itemId] : null; }
+function setPadrao(serviceId, itemId, v){
+  const val = parseFloat(String(v).replace(',','.'));
+  const all = JSON.parse(JSON.stringify(config.padroesInsumo||{}));
+  all[serviceId] = all[serviceId]||{};
+  if(val>0) all[serviceId][itemId]=val; else delete all[serviceId][itemId];
+  saveConfig({padroesInsumo:all});
+}
+function computeInsumoDesvios(){
+  const out=[]; const stats=insumoStats(30);
+  Object.values(stats).forEach(s=>Object.values(s.items).forEach(it=>{
+    const pad=padraoDe(s.serviceId,it.id); if(!pad) return;
+    ['owner','pro'].forEach(w=>{ if(!it[w].n) return; const avg=it[w].sum/it[w].n; if(avg>pad*1.15) out.push({service:s.label, item:it.nome, who:w, avg, pad, extra:(avg-pad)*custoUnit(it.id)}); });
+  }));
+  return out;
+}
+function insumoBar(label, avg, pad, unidade){
+  const max = Math.max(avg, pad||0)*1.15 || 1;
+  const over = pad && avg>pad*1.15;
+  const row = el('div','flex items-center gap-2 mb-1');
+  row.innerHTML = `<span class="text-xs opacity-60" style="width:64px">${label}</span>
+    <div style="flex:1;position:relative;height:10px;border-radius:5px;background:var(--rose-light)">
+      <div style="width:${Math.min(100,avg/max*100)}%;height:10px;border-radius:5px;background:${over?'var(--danger)':'var(--rose)'}"></div>
+      ${pad?`<div style="position:absolute;top:-3px;left:${Math.min(100,pad/max*100)}%;width:2px;height:16px;background:var(--ink)"></div>`:''}
+    </div>
+    <span class="text-xs" style="width:56px;text-align:right;${over?'color:var(--danger);font-weight:600':''}">${Math.round(avg*10)/10}${unidade}</span>`;
+  return row;
+}
+function renderInsumosPadrao(){
+  const wrap=el('div');
+  wrap.appendChild(backButton(goEstoque));
+  wrap.appendChild(el('h2','text-xl font-bold mb-1','Padrão de insumos'));
+  wrap.appendChild(el('p','text-xs opacity-60 mb-4',`Média gasta por atendimento nos últimos 30 dias, sua e da ${config.nomeProfissional}. Defina o padrão de cada produto (a linha preta) e eu aviso quando alguém passar mais de 15% dele.`));
+  const desvios = computeInsumoDesvios();
+  if(desvios.length){
+    const box=el('div','rounded-xl p-3 mb-4'); box.style.background='var(--danger-light)'; box.style.border='1px solid var(--danger-border)';
+    box.innerHTML = desvios.map(d=>`<p class="text-xs mb-1" style="color:var(--danger)"><b>${d.item}</b> em ${d.service}: ${d.who==='pro'?config.nomeProfissional:'você'} usa ${Math.round(d.avg*10)/10} (padrão ${d.pad})${d.extra>0?' · ~'+fmtMoney(d.extra)+' a mais por atendimento':''}</p>`).join('');
+    wrap.appendChild(box);
+  }
+  const stats = Object.values(insumoStats(30));
+  if(!stats.length){
+    wrap.appendChild(el('p','text-sm opacity-60','Ainda não tem atendimento com insumo lançado nos últimos 30 dias. Assim que você ou ela lançarem insumos durante o atendimento, as médias aparecem aqui.'));
+    return wrap;
+  }
+  stats.sort((a,b)=>a.label.localeCompare(b.label)).forEach(s=>{
+    const card=el('div','rounded-2xl p-4 mb-3 bg-white shadow-sm'); card.style.border='1px solid var(--rose-light)';
+    card.appendChild(el('p','font-semibold text-sm mb-3',s.label));
+    Object.values(s.items).forEach(it=>{
+      const pad = padraoDe(s.serviceId,it.id);
+      const head = el('div','flex items-center justify-between mb-1');
+      head.appendChild(el('span','text-xs font-medium',it.nome));
+      const padIn = el('input','rounded-lg px-2 py-1 text-xs'); padIn.type='number'; padIn.inputMode='decimal'; padIn.style.width='96px'; padIn.style.border='1px solid var(--rose-light)';
+      padIn.placeholder='padrão ('+it.unidade+')'; padIn.value = pad||'';
+      padIn.onchange=(e)=>setPadrao(s.serviceId,it.id,e.target.value);
+      head.appendChild(padIn);
+      card.appendChild(head);
+      if(it.owner.n) card.appendChild(insumoBar('Você', it.owner.sum/it.owner.n, pad, it.unidade));
+      if(it.pro.n) card.appendChild(insumoBar(config.nomeProfissional.slice(0,10), it.pro.sum/it.pro.n, pad, it.unidade));
+      card.appendChild(el('p','text-xs opacity-40 mb-3',`${it.owner.n} seu(s) · ${it.pro.n} dela`));
+    });
+    wrap.appendChild(card);
+  });
+  return wrap;
+}
+
+// ---------- fechamento da profissional ----------
+function fechamentoDoMes(mk){
+  const recs = records.filter(r=>r.performedBy==='pro' && monthKey(r.startedAt||r.createdAt)===mk);
+  const dela = recs.filter(r=>r.proOwnClient);
+  const studio = recs.filter(r=>!r.proOwnClient);
+  const sum=(arr,f)=>arr.reduce((a,r)=>a+(f(r)||0),0);
+  const pct = config.comissaoProfissionalPercent||0;
+  const fatDela = sum(dela,r=>r.proPrice);
+  const comissao = Math.round(fatDela*pct)/100;
+  const insumosDela = sum(dela,r=>r.productCost);
+  const insumosStudio = sum(studio,r=>r.productCost);
+  const repasse = comissao + (config.cobrarInsumosClientesDela ? insumosDela : 0);
+  return { recs, dela, studio, fatDela, comissao, pct, insumosDela, insumosStudio, repasse,
+    horasStudio: sum(studio,r=>r.durationMin)/60, horasDela: sum(dela,r=>r.durationMin)/60 };
+}
+function fechamentoMsg(mk, f){
+  const nome = (config.nomeProfissional||'').split(' ')[0];
+  let m = `Oi ${nome}! Fechamento de ${monthLabel(mk)} no Studio Avlis:\n\n`;
+  m += `Clientes do studio que você atendeu: ${f.studio.length}\n`;
+  m += `Suas clientes: ${f.dela.length} (total cobrado ${fmtMoney(f.fatDela)})\n`;
+  m += `Comissão do studio (${f.pct}%): ${fmtMoney(f.comissao)}\n`;
+  if(config.cobrarInsumosClientesDela) m += `Insumos usados nas suas clientes: ${fmtMoney(f.insumosDela)}\n`;
+  m += `\nTotal a repassar: ${fmtMoney(f.repasse)}\nQualquer dúvida me fala 💕`;
+  return m;
+}
+function renderFechamento(){
+  const wrap=el('div');
+  wrap.appendChild(backButton(goFinance));
+  const mk = currentMonthKeyFromOffset();
+  const navRow = el('div','flex items-center justify-between mb-1');
+  const prev=el('button','tap text-lg px-2','‹'); prev.onclick=()=>shiftFinanceMonth(-1);
+  const next=el('button','tap text-lg px-2','›'); next.onclick=()=>shiftFinanceMonth(1);
+  navRow.appendChild(prev); navRow.appendChild(el('h2','text-xl font-bold', monthLabel(mk))); navRow.appendChild(next);
+  wrap.appendChild(navRow);
+  wrap.appendChild(el('p','text-xs opacity-60 text-center mb-4','Acerto com '+config.nomeProfissional));
+  const f = fechamentoDoMes(mk);
+
+  const grid=el('div','grid grid-cols-2 gap-2 mb-3');
+  [[`Clientes do studio`, f.studio.length, (Math.round(f.horasStudio*10)/10)+'h'],[`Clientes dela`, f.dela.length, (Math.round(f.horasDela*10)/10)+'h']].forEach(([l,v,s])=>{
+    const c=el('div','rounded-xl p-3 bg-white shadow-sm'); c.style.border='1px solid var(--rose-light)';
+    c.innerHTML=`<p class="text-xs opacity-60">${l}</p><p class="text-xl font-bold">${v}</p><p class="text-xs opacity-50">${s}</p>`;
+    grid.appendChild(c);
+  });
+  wrap.appendChild(grid);
+
+  const card=el('div','rounded-2xl p-4 mb-3 bg-white shadow-sm text-sm'); card.style.border='1px solid var(--rose-light)';
+  const line=(l,v,strong)=>`<div class="flex justify-between ${strong?'font-bold pt-2 mt-1':'mb-2'}" ${strong?'style="border-top:1px solid var(--rose-light)"':''}><span class="${strong?'':'opacity-60'}">${l}</span><span ${strong?'style="color:var(--rose-dark)"':''}>${v}</span></div>`;
+  card.innerHTML = line('Faturado com as clientes dela', fmtMoney(f.fatDela))
+    + line(`Comissão do studio (${f.pct}%)`, fmtMoney(f.comissao))
+    + line('Insumos nas clientes dela'+(config.cobrarInsumosClientesDela?'':' (não cobrado)'), fmtMoney(f.insumosDela))
+    + line('Insumos nas clientes do studio', fmtMoney(f.insumosStudio))
+    + line('Ela repassa ao studio', fmtMoney(f.repasse), true);
+  wrap.appendChild(card);
+
+  const tog=el('label','flex items-center gap-2 text-xs mb-4 opacity-80');
+  const cb=el('input'); cb.type='checkbox'; cb.checked=!!config.cobrarInsumosClientesDela; cb.onchange=(e)=>saveConfig({cobrarInsumosClientesDela:e.target.checked});
+  tog.appendChild(cb); tog.appendChild(document.createTextNode('Cobrar dela os insumos usados nas clientes dela'));
+  wrap.appendChild(tog);
+
+  wrap.appendChild(el('label','block text-xs opacity-60 mb-1','WhatsApp da '+config.nomeProfissional));
+  const wIn=el('input','w-full rounded-lg px-2 py-2 text-sm mb-2'); wIn.type='tel'; wIn.placeholder='21 99999-9999'; wIn.style.border='1px solid var(--rose-light)';
+  wIn.value=config.whatsappProfissional||''; wIn.onchange=(e)=>saveConfig({whatsappProfissional:e.target.value});
+  wrap.appendChild(wIn);
+  const msg = fechamentoMsg(mk, f);
+  const link = waLink(config.whatsappProfissional, msg);
+  const btnRow=el('div','flex gap-2 mb-5');
+  if(link){
+    const a=el('a','tap flex-1 text-center text-sm px-3 py-2.5 rounded-xl text-white','Enviar resumo pra ela'); a.href=link; a.target='_blank'; a.rel='noopener'; a.style.background='var(--rose)';
+    btnRow.appendChild(a);
+  } else {
+    btnRow.appendChild(el('span','text-xs opacity-50 py-2','Cadastre o WhatsApp dela pra enviar o resumo.'));
+  }
+  btnRow.appendChild(copyButton(msg));
+  wrap.appendChild(btnRow);
+
+  if(f.recs.length){
+    wrap.appendChild(el('p','text-xs uppercase tracking-wide opacity-60 mb-2','Atendimentos dela no mês'));
+    const list=el('div','space-y-2');
+    f.recs.slice().sort((a,b)=>(b.startedAt||0)-(a.startedAt||0)).forEach(r=>{
+      const row=el('div','rounded-xl px-3 py-2 bg-white shadow-sm text-sm flex justify-between'); row.style.border='1px solid var(--hairline)';
+      const d=new Date(r.startedAt||r.createdAt);
+      row.innerHTML=`<div><p class="font-medium">${r.serviceLabel}</p><p class="text-xs opacity-60">${String(d.getDate()).padStart(2,'0')}/${String(d.getMonth()+1).padStart(2,'0')} · ${r.proOwnClient?'cliente dela'+(r.clientName?' ('+r.clientName+')':''):'cliente do studio'}</p></div>
+        <div class="text-right text-xs">${r.proOwnClient?'<b>'+fmtMoney(r.proPrice)+'</b><br>':''}<span class="opacity-60">insumos ${fmtMoney(r.productCost)}</span></div>`;
+      list.appendChild(row);
+    });
+    wrap.appendChild(list);
+  } else {
+    wrap.appendChild(el('p','text-sm opacity-60','Nenhum atendimento dela lançado nesse mês.'));
+  }
+  return wrap;
+}
+
 function renderAgendaItem(ag){
   const row = el('div','rounded-xl px-3 py-3 bg-white shadow-sm mb-2');
   row.style.border='1px solid var(--rose-light)';
@@ -1638,6 +1874,18 @@ function renderAgendaItem(ag){
       const startBtn=el('button','tap text-xs px-3 py-2 rounded-lg text-white','Iniciar');
       startBtn.style.background='var(--rose)'; startBtn.onclick=()=>startFromAgendamento(ag);
       btnRow.appendChild(startBtn);
+    }
+    if(state.role!=='pro' && ag.date>=todayKeyNow()){
+      const c = clients.find(c=>c.id===ag.clientId);
+      const link = c ? waLink(c.whatsapp, lembreteMsg(ag)) : null;
+      if(link){
+        const wa=el('a','tap text-xs px-3 py-2 rounded-lg', ag.reminderSentAt ? 'Lembrete enviado ✓' : 'Enviar lembrete');
+        wa.href=link; wa.target='_blank'; wa.rel='noopener';
+        if(ag.reminderSentAt){ wa.style.background='#e4f1e9'; wa.style.color='var(--green)'; }
+        else { wa.style.background='#1f8f4e'; wa.style.color='white'; }
+        wa.onclick=()=>{ setTimeout(()=>updateAgendamento(ag.id,{reminderSentAt:Date.now()}),300); };
+        btnRow.appendChild(wa);
+      }
     }
     if(ag.status==='agendado'){
       const confBtn=el('button','tap text-xs px-3 py-2 rounded-lg','Confirmar');
