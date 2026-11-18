@@ -90,6 +90,7 @@ const DEFAULT_CONFIG = {
   routineTemplate: 'Oi {nome}! Já faz {dias} dias desde seu(sua) {servico} — bora agendar o próximo pra manter tudo em dia? Me fala o melhor horário pra você 💕',
   rotinaAvisoDias: 5,
   nomeProfissional: 'Profissional', comissaoProfissionalPercent: 30,
+  donaPin: '0810',
 };
 const PAYMENT_METHODS = ['Dinheiro','Cartão débito','Cartão crédito','Pix','Outro'];
 
@@ -103,18 +104,22 @@ let custos = [];
 let estoque = [];
 let config = Object.assign({}, DEFAULT_CONFIG);
 
+function isOwnerUnlocked(){ try{ return localStorage.getItem('avlis_owner_unlocked')==='1'; }catch(e){ return false; } }
+function setOwnerUnlocked(){ try{ localStorage.setItem('avlis_owner_unlocked','1'); }catch(e){} }
 function detectInitialRole(){
   try{
     const h = (location.hash||'').replace('#','').toLowerCase().trim();
     if(h==='profissional' || h==='equipe' || h==='agenda-profissional'){ saveRole('pro'); return 'pro'; }
-    if(h==='dona' || h==='avlis' || h==='proprietaria'){ saveRole('owner'); return 'owner'; }
   }catch(e){}
-  return loadRole() || 'owner';
+  if(loadRole()==='pro') return 'pro';
+  if(isOwnerUnlocked()) return 'owner';
+  return 'locked';
 }
 const INITIAL_ROLE = detectInitialRole();
 let state = {
-  screen: INITIAL_ROLE==='pro' ? 'pro-home' : 'home',
-  role: INITIAL_ROLE,
+  screen: INITIAL_ROLE==='pro' ? 'pro-home' : (INITIAL_ROLE==='owner' ? 'home' : 'pin-lock'),
+  role: INITIAL_ROLE==='locked' ? null : INITIAL_ROLE,
+  pinInput: '', pinError: false,
   service: null,
   timer: { status:'idle', startedAt:null, accumulated:0, stockUsage:[], insumoSelectedId:null, insumoQty:'', showInsumoForm:false },
   tickHandle: null,
@@ -147,6 +152,14 @@ function loadLocalClients(){ try{ const raw=localStorage.getItem('avlis_clientes
 function saveLocalClients(){ try{ localStorage.setItem('avlis_clientes', JSON.stringify(clients)); }catch(e){} }
 function loadRole(){ try{ return localStorage.getItem('avlis_role')||null; }catch(e){ return null; } }
 function saveRole(r){ try{ localStorage.setItem('avlis_role', r); }catch(e){} }
+function setPinDigit(v){ state.pinInput = (v||'').replace(/\D/g,'').slice(0,4); state.pinError=false; render(); }
+function checkPin(){
+  if(state.pinInput.length===4 && state.pinInput === String(config.donaPin||'0000')){
+    setOwnerUnlocked(); saveRole('owner'); state.role='owner'; state.screen='home'; state.pinInput=''; state.pinError=false; render();
+  } else {
+    state.pinInput=''; state.pinError=true; render();
+  }
+}
 function loadLocalConfig(){ try{ const raw=localStorage.getItem('avlis_config'); if(raw) config=Object.assign({},DEFAULT_CONFIG,JSON.parse(raw)); }catch(e){} }
 function saveLocalConfig(){ try{ localStorage.setItem('avlis_config', JSON.stringify(config)); }catch(e){} }
 function loadLocalAgendamentos(){ try{ const raw=localStorage.getItem('avlis_agendamentos'); agendamentos = raw?JSON.parse(raw):[]; }catch(e){ agendamentos=[]; } }
@@ -780,6 +793,7 @@ function render(){
   else if(state.screen==='estoque') app.appendChild(renderEstoqueScreen());
   else if(state.screen==='pro-home') app.appendChild(renderProHome());
   else if(state.screen==='pro-agenda') app.appendChild(renderAgenda());
+  else if(state.screen==='pin-lock') app.appendChild(renderPinLock());
   if(MAIN_SCREENS.includes(state.screen) && state.role!=='pro') document.body.appendChild(renderBottomNav());
   else if(state.role==='pro' && PRO_SCREENS.includes(state.screen)) document.body.appendChild(renderProBottomNav());
 }
@@ -842,6 +856,22 @@ function iconLabel(name, text, color){
 function el(tag,cls,html){ const e=document.createElement(tag); if(cls) e.className=cls; if(html!==undefined) e.innerHTML=html; return e; }
 function backButton(fn){ const b=el('button','tap text-sm mb-3 opacity-60','← voltar'); b.onclick=fn; return b; }
 function bigButton(label,bg,onClick){ const b=el('button','tap btn-big w-full rounded-2xl text-white text-lg font-semibold shadow-md'); b.style.background=bg; b.textContent=label; b.onclick=onClick; return b; }
+
+function renderPinLock(){
+  const wrap=el('div','text-center mt-20');
+  wrap.appendChild(el('h1','text-2xl font-bold mb-1', 'Studio Avlis'));
+  wrap.appendChild(el('p','text-sm opacity-60 mb-6','Digite o PIN de 4 dígitos'));
+  const input=el('input'); input.type='tel'; input.inputMode='numeric'; input.maxLength=4; input.autofocus=true;
+  input.style.cssText='width:160px;text-align:center;font-size:28px;letter-spacing:12px;border-radius:14px;padding:12px;border:1px solid var(--rose-light);display:block;margin:0 auto 16px;';
+  input.value=state.pinInput||'';
+  input.oninput=(e)=>{ const v=e.target.value.replace(/\D/g,'').slice(0,4); setPinDigit(v); if(v.length===4) setTimeout(checkPin,150); };
+  wrap.appendChild(input);
+  if(state.pinError){
+    const err = el('p','text-sm mb-2', 'PIN incorreto, tenta de novo.'); err.style.color='var(--danger)';
+    wrap.appendChild(err);
+  }
+  return wrap;
+}
 
 function renderHome(){
   const wrap=el('div');
@@ -1480,6 +1510,13 @@ function renderFinance(){
     nomeRow.appendChild(nomeInp);
     cfgCard.appendChild(nomeRow);
     cfgCard.appendChild(field('Comissão do studio nas clientes dela (%)','comissaoProfissionalPercent'));
+    const pinRow=el('div');
+    pinRow.appendChild(el('label','block text-xs opacity-60 mb-1','PIN de 4 dígitos pra abrir essa página (seu acesso)'));
+    const pinInp=el('input','w-full rounded-lg px-2 py-1 text-sm'); pinInp.style.border='1px solid var(--rose-light)';
+    pinInp.type='tel'; pinInp.inputMode='numeric'; pinInp.maxLength=4; pinInp.value=config.donaPin;
+    pinInp.onchange=(e)=>{ const v=(e.target.value||'').replace(/\D/g,'').slice(0,4); if(v.length===4) saveConfig({donaPin:v}); };
+    pinRow.appendChild(pinInp);
+    cfgCard.appendChild(pinRow);
     wrap.appendChild(cfgCard);
   }
 
