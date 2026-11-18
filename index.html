@@ -797,7 +797,11 @@ function render(){
   else if(state.screen==='estoque') app.appendChild(renderEstoqueScreen());
   else if(state.screen==='pro-home') app.appendChild(renderProHome());
   else if(state.screen==='pro-agenda') app.appendChild(renderAgenda());
-  else if(state.screen==='pin-lock') app.appendChild(renderPinLock());
+  else if(state.screen==='pin-lock'){
+    app.appendChild(renderPinLock());
+    const pinEl=document.getElementById('pin-input');
+    if(pinEl){ pinEl.focus(); const len=pinEl.value.length; try{ pinEl.setSelectionRange(len,len); }catch(e){} }
+  }
   if(MAIN_SCREENS.includes(state.screen) && state.role!=='pro') document.body.appendChild(renderBottomNav());
   else if(state.role==='pro' && PRO_SCREENS.includes(state.screen)) document.body.appendChild(renderProBottomNav());
 }
@@ -865,7 +869,7 @@ function renderPinLock(){
   const wrap=el('div','text-center mt-20');
   wrap.appendChild(el('h1','text-2xl font-bold mb-1', 'Studio Avlis'));
   wrap.appendChild(el('p','text-sm opacity-60 mb-6','Digite o PIN de 4 dígitos'));
-  const input=el('input'); input.type='tel'; input.inputMode='numeric'; input.maxLength=4; input.autofocus=true;
+  const input=el('input'); input.type='tel'; input.inputMode='numeric'; input.maxLength=4; input.autofocus=true; input.id='pin-input';
   input.style.cssText='width:160px;text-align:center;font-size:28px;letter-spacing:12px;border-radius:14px;padding:12px;border:1px solid var(--rose-light);display:block;margin:0 auto 16px;';
   input.value=state.pinInput||'';
   input.oninput=(e)=>{ const v=e.target.value.replace(/\D/g,'').slice(0,4); setPinDigit(v); if(v.length===4) setTimeout(checkPin,150); };
@@ -2110,8 +2114,7 @@ let gcalAvailable = false;
 getGcal().then(mcp=>{ if(mcp){ gcalAvailable=true; render(); } });
 initDb();
 render();
+if('serviceWorker' in navigator){ window.addEventListener('load', ()=>{ navigator.serviceWorker.register('sw.js').catch(()=>{}); }); }
 </script>
 </body>
 </html>
-
-if('serviceWorker' in navigator){ window.addEventListener('load', ()=>{ navigator.serviceWorker.register('sw.js').catch(()=>{}); }); }
