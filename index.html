@@ -122,6 +122,7 @@ function detectInitialRole(){
     const h = (location.hash||'').replace('#','').toLowerCase().trim();
     if(h==='profissional' || h==='equipe' || h==='agenda-profissional'){ saveRole('pro'); return 'pro'; }
   }catch(e){}
+  try{ if((location.hash||'').toLowerCase()==='#dona'){ localStorage.removeItem('avlis_role'); } }catch(e){}
   if(loadRole()==='pro') return 'pro';
   if(isOwnerUnlocked()) return 'owner';
   return 'locked';
@@ -1130,9 +1131,9 @@ function renderProHome(){
     wrap.appendChild(list);
   }
 
-  const exitLink=el('p','text-xs text-center mt-6');
-  exitLink.style.opacity='0.35';
-  exitLink.innerHTML = 'entrar como dona';
+  const exitLink=el('p','text-sm text-center mt-8 underline');
+  exitLink.style.opacity='0.7';
+  exitLink.innerHTML = 'Sou a dona do studio — entrar com PIN';
   exitLink.style.cursor='pointer';
   exitLink.onclick = exitProMode;
   wrap.appendChild(exitLink);
