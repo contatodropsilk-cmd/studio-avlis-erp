@@ -149,7 +149,7 @@ let state = {
   newCusto: { label:'', value:'' },
   newEstoque: { nome:'', validade:'', valorPago:'', quantidadeTotal:'', unidade:'g', limiteMinimo:'' },
   showEstoqueForm: false,
-  agenda: { date: todayKeyNow(), mode:'day', view:'grid', selectedId:null, formOpen:false, clientId:null, clientName:'', clientSearch:'', showNewClientForm:false, serviceId:null, startTime:'09:00', durationMin:60, clienteDaProfissional:false },
+  agenda: { date: todayKeyNow(), mode:'day', view:'grid', selectedId:null, formOpen:false, clientId:null, clientName:'', clientSearch:'', showNewClientForm:false, serviceIds:[], startTime:'09:00', durationMin:60, clienteDaProfissional:false },
   draft: {
     clientId:null, clientName:'', clientWhatsapp:'', clientSearch:'', showNewClientForm:false,
     suggestion:null, lastVisitInfo:null,
@@ -898,7 +898,7 @@ function shiftAgendaDate(delta){
   const d=new Date(state.agenda.date+'T00:00:00'); d.setDate(d.getDate()+delta);
   state.agenda.date = localKey(d); render();
 }
-function resetAgendaForm(){ Object.assign(state.agenda, {clientId:null, clientName:'', clientSearch:'', showNewClientForm:false, serviceId:null, startTime:'09:00', durationMin:60, note:'', clienteDaProfissional:false}); }
+function resetAgendaForm(){ Object.assign(state.agenda, {clientId:null, clientName:'', clientSearch:'', showNewClientForm:false, serviceIds:[], startTime:'09:00', durationMin:60, note:'', clienteDaProfissional:false}); }
 function setClienteDaProfissional(v){ state.agenda.clienteDaProfissional=v; render(); }
 function agendaSetNote(v){ state.agenda.note=v; }
 function toggleAgendaForm(){ state.agenda.formOpen=!state.agenda.formOpen; if(state.agenda.formOpen) resetAgendaForm(); render(); }
@@ -913,17 +913,24 @@ function agendaSubmitNewClient(){
   const name=n?n.value.trim():''; if(!name) return;
   createClient(name, w?w.value.trim():'', (c)=>{ state.agenda.clientId=c.id; state.agenda.clientName=c.name; state.agenda.showNewClientForm=false; render(); });
 }
-function agendaPickService(svc){ state.agenda.serviceId=svc.id; state.agenda.durationMin = svc.estimatedMin||60; render(); }
+function agendaPickService(svc){
+  const ids=state.agenda.serviceIds||(state.agenda.serviceIds=[]);
+  const i=ids.indexOf(svc.id); if(i>=0) ids.splice(i,1); else ids.push(svc.id);
+  const total=ids.reduce((a,id)=>a+((serviceById(id)||{}).estimatedMin||60),0);
+  if(total>0) state.agenda.durationMin=total;
+  render();
+}
 function agendaSetTime(v){ state.agenda.startTime=v; render(); }
 function agendaSetDuration(v){ state.agenda.durationMin=parseInt(v)||0; render(); }
 function saveAgendamento(){
-  const svc = serviceById(state.agenda.serviceId);
-  if(!svc || !state.agenda.clientName) return;
+  const svcs = (state.agenda.serviceIds||[]).map(serviceById).filter(Boolean);
+  if(!svcs.length || !state.agenda.clientName) return;
+  const svc = svcs[0];
   const endTime = addMinutesToTime(state.agenda.startTime, state.agenda.durationMin);
   const rec = {
     date: state.agenda.date, startTime: state.agenda.startTime, endTime,
     clientId: state.agenda.clientId, clientName: state.agenda.clientName,
-    service: svc.id, serviceLabel: svc.label, status:'agendado', createdAt: Date.now(),
+    service: svc.id, serviceIds: svcs.map(x=>x.id), serviceLabel: svcs.map(x=>x.label).join(' + '), status:'agendado', createdAt: Date.now(),
     note: (document.getElementById('ag-note')&&document.getElementById('ag-note').value)||'',
     bookedBy: state.role==='pro' ? 'pro' : 'owner',
     clienteDaProfissional: state.role==='pro' ? !!state.agenda.clienteDaProfissional : false,
@@ -1005,7 +1012,10 @@ function goInsumosPadrao(){ state.screen='insumos-padrao'; render(); }
 function goFechamento(){ state.screen='fechamento'; render(); }
 function goProHome(){ state.screen='pro-home'; render(); }
 function render(){
-  const app=document.getElementById('app'); app.innerHTML='';
+  const app=document.getElementById('app');
+  const ae=document.activeElement; const keepId=(ae && ae.id && ae.tagName==='INPUT' && ae.id!=='pin-input')?ae.id:null;
+  let selS=0, selE=0; if(keepId){ try{ selS=ae.selectionStart; selE=ae.selectionEnd; }catch(e){} }
+  app.innerHTML='';
   if(state.screen==='home') app.appendChild(renderHome());
   else if(state.screen==='pick-service') app.appendChild(renderPickService());
   else if(state.screen==='timer') app.appendChild(renderTimer());
@@ -1032,6 +1042,7 @@ function render(){
   if(MAIN_SCREENS.includes(state.screen) && state.role!=='pro') document.body.appendChild(renderBottomNav());
   else if(state.role==='pro' && PRO_SCREENS.includes(state.screen)) document.body.appendChild(renderProBottomNav());
   renderSyncDot();
+  if(keepId){ const ne=document.getElementById(keepId); if(ne){ ne.focus(); try{ ne.setSelectionRange(selS,selE); }catch(e){} } }
 }
 function renderProBottomNav(){
   const existing = document.querySelector('.bottom-nav');
@@ -1395,7 +1406,7 @@ function renderFinishClient(){
   wrap.appendChild(el('p','text-sm opacity-60 mb-4', state.service.label));
   const search=el('input','w-full rounded-xl px-3 py-2 text-sm mb-3');
   search.style.border='1px solid var(--rose-light)'; search.placeholder='Buscar por nome...';
-  search.value=state.draft.clientSearch; search.oninput=(e)=>pickClientSearch(e.target.value);
+  search.id='draft-search'; search.value=state.draft.clientSearch; search.oninput=(e)=>pickClientSearch(e.target.value);
   wrap.appendChild(search);
   const q=state.draft.clientSearch.trim().toLowerCase();
   const filtered = q ? clients.filter(c=>c.name.toLowerCase().includes(q)) : clients.slice(0,8);
@@ -2093,7 +2104,7 @@ function renderFechamento(){
   return wrap;
 }
 
-function renderAgendaItem(ag){
+function renderAgendaItem(ag, detail){
   const row = el('div','rounded-xl px-3 py-3 bg-white shadow-sm mb-2');
   row.style.border='1px solid var(--rose-light)';
   const [statusLabel, statusColor] = AGENDA_STATUS_MAP[ag.status] || AGENDA_STATUS_MAP.agendado;
@@ -2104,7 +2115,8 @@ function renderAgendaItem(ag){
     </div>
     <p class="text-sm">${ag.clientName||'(sem cliente)'} · ${ag.serviceLabel}</p>
     ${state.role!=='pro' && ag.bookedBy==='pro' ? `<p class="text-xs mt-1" style="color:var(--amber)">agendado por ${config.nomeProfissional}${ag.clienteDaProfissional?' · cliente dela (comissão)':''}</p>` : ''}
-    ${ag.note?`<p class="text-xs opacity-50 mt-1">${ag.note}</p>`:''}
+    ${(detail && (ag.serviceLabel||'').includes(' + ')) ? `<p class="text-xs opacity-70 mt-1">Serviços: ${ag.serviceLabel}</p>`:''}
+    ${detail ? `<p class="text-sm mt-2"><b>Observação:</b> ${ag.note ? ag.note.replace(/</g,'&lt;') : '<span class="opacity-50">nenhuma</span>'}</p>` : (ag.note?`<p class="text-xs opacity-50 mt-1">${ag.note.replace(/</g,'&lt;')}</p>`:'')}
   `;
   if(ag.status==='agendado' || ag.status==='confirmado'){
     const btnRow = el('div','flex flex-wrap gap-2 mt-2');
@@ -2147,7 +2159,7 @@ function renderAgendaForm(){
     form.appendChild(el('p','text-sm mb-2','👤 selecionada: <b>'+state.agenda.clientName+'</b>'));
   } else {
     const search=el('input','w-full rounded-lg px-2 py-2 text-sm mb-2'); search.style.border='1px solid var(--rose-light)';
-    search.placeholder='Buscar por nome...'; search.value=state.agenda.clientSearch; search.oninput=(e)=>agendaPickClientSearch(e.target.value);
+    search.id='ag-search'; search.placeholder='Buscar por nome...'; search.value=state.agenda.clientSearch; search.oninput=(e)=>agendaPickClientSearch(e.target.value);
     form.appendChild(search);
     const q=state.agenda.clientSearch.trim().toLowerCase();
     const filtered = q ? clients.filter(c=>c.name.toLowerCase().includes(q)) : clients.slice(0,5);
@@ -2170,12 +2182,14 @@ function renderAgendaForm(){
     }
   }
 
-  form.appendChild(el('p','text-xs uppercase tracking-wide opacity-50 mb-2 mt-2','Serviço'));
+  form.appendChild(el('p','text-xs uppercase tracking-wide opacity-50 mb-2 mt-2','Serviços (toque em um ou mais)'));
   const grid=el('div','grid grid-cols-2 gap-1 mb-3');
   SERVICES.forEach(s=>{
     const b=el('button','tap text-xs rounded-lg px-2 py-2', s.label);
-    b.style.background = state.agenda.serviceId===s.id ? 'var(--rose)' : 'var(--cream)';
-    b.style.color = state.agenda.serviceId===s.id ? 'white':'var(--ink)';
+    const on=(state.agenda.serviceIds||[]).includes(s.id);
+    b.style.background = on ? 'var(--rose)' : 'var(--cream)';
+    b.style.color = on ? 'white':'var(--ink)';
+    if(on) b.textContent='✓ '+s.label;
     b.onclick=()=>agendaPickService(s);
     grid.appendChild(b);
   });
@@ -2202,7 +2216,7 @@ function renderAgendaForm(){
     form.appendChild(comRow);
   }
 
-  if(state.agenda.serviceId){
+  if((state.agenda.serviceIds||[]).length){
     const conflicts = findConflicts(state.agenda.date, state.agenda.startTime, state.agenda.durationMin);
     if(conflicts.length){
       const warn=el('div','rounded-lg p-2 mb-3 text-xs'); warn.style.background='var(--danger-light)'; warn.style.color='var(--danger)';
@@ -2283,9 +2297,9 @@ function renderAgenda(){
   const dayItems = agendamentos.filter(a=>a.date===state.agenda.date && a.status!=='cancelado').sort((a,b)=>timeToMinutes(a.startTime)-timeToMinutes(b.startTime));
 
   if(state.agenda.view==='grid'){
-    wrap.appendChild(renderAgendaGrid(dayItems));
     const sel = state.agenda.selectedId ? agendamentos.find(a=>a.id===state.agenda.selectedId) : null;
-    if(sel){ wrap.appendChild(el('p','text-xs uppercase tracking-wide mb-2 mt-4','Selecionado')); wrap.appendChild(renderAgendaItem(sel)); }
+    if(sel){ wrap.appendChild(el('p','text-xs uppercase tracking-wide mb-2','Detalhes do agendamento (toque de novo no horário para fechar)')); wrap.appendChild(renderAgendaItem(sel,true)); }
+    wrap.appendChild(renderAgendaGrid(dayItems));
   } else {
     if(!dayItems.length) wrap.appendChild(el('p','text-sm opacity-60 mb-4','Nenhum agendamento nesse dia.'));
     else dayItems.forEach(ag=>wrap.appendChild(renderAgendaItem(ag)));
