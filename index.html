@@ -3,7 +3,6 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no">
-<title>Studio Avlis — Atendimentos</title>
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#8e2347">
 <meta name="mobile-web-app-capable" content="yes">
@@ -15,6 +14,7 @@
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
 <script src="firebase-config.js"></script>
+<title>Studio Avlis — Atendimentos</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Work+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -152,6 +152,10 @@ function loadLocalClients(){ try{ const raw=localStorage.getItem('avlis_clientes
 function saveLocalClients(){ try{ localStorage.setItem('avlis_clientes', JSON.stringify(clients)); }catch(e){} }
 function loadRole(){ try{ return localStorage.getItem('avlis_role')||null; }catch(e){ return null; } }
 function saveRole(r){ try{ localStorage.setItem('avlis_role', r); }catch(e){} }
+function exitProMode(){
+  try{ localStorage.removeItem('avlis_role'); }catch(e){}
+  state.role=null; state.screen='pin-lock'; state.pinInput=''; state.pinError=false; render();
+}
 function setPinDigit(v){ state.pinInput = (v||'').replace(/\D/g,'').slice(0,4); state.pinError=false; render(); }
 function checkPin(){
   if(state.pinInput.length===4 && state.pinInput === String(config.donaPin||'0000')){
@@ -991,6 +995,14 @@ function renderProHome(){
     });
     wrap.appendChild(list);
   }
+
+  const exitLink=el('p','text-xs text-center mt-6');
+  exitLink.style.opacity='0.35';
+  exitLink.innerHTML = 'entrar como dona';
+  exitLink.style.cursor='pointer';
+  exitLink.onclick = exitProMode;
+  wrap.appendChild(exitLink);
+
   return wrap;
 }
 
@@ -2098,7 +2110,8 @@ let gcalAvailable = false;
 getGcal().then(mcp=>{ if(mcp){ gcalAvailable=true; render(); } });
 initDb();
 render();
-if('serviceWorker' in navigator){ window.addEventListener('load', ()=>{ navigator.serviceWorker.register('sw.js').catch(()=>{}); }); }
 </script>
 </body>
 </html>
+
+if('serviceWorker' in navigator){ window.addEventListener('load', ()=>{ navigator.serviceWorker.register('sw.js').catch(()=>{}); }); }
