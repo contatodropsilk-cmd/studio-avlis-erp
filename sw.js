@@ -1,4 +1,4 @@
-const CACHE_NAME = 'studio-avlis-v2';
+const CACHE_NAME = 'studio-avlis-v3';
 const SHELL = ['/', '/index.html', '/manifest.json', '/icons/icon-192.png', '/icons/icon-512.png'];
 
 self.addEventListener('install', (event) => {
@@ -20,10 +20,10 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   if(event.request.method !== 'GET') return;
   const url = event.request.url;
-  if(url.includes('firestore') || url.includes('googleapis')) return;
+  if(url.includes('firestore.googleapis') || url.includes('/google.firestore')) return;
   event.respondWith(
     fetch(event.request).then((resp) => {
-      if(resp && resp.ok && new URL(url).origin === self.location.origin){
+      if(resp && (resp.ok || resp.type === 'opaque')){
         const copy = resp.clone();
         caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy)).catch(()=>{});
       }

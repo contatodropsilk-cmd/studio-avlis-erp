@@ -183,6 +183,7 @@ async function initDb(){
     if(hasConfig && typeof firebase !== 'undefined'){
       firebase.initializeApp(window.FIREBASE_CONFIG);
       db = firebase.firestore();
+      try{ db.enablePersistence({synchronizeTabs:true}).catch(()=>{}); }catch(e){}
       try{ db.collection('atendimentos').onSnapshot(snap=>{
         records = snap.docs.map(d=>({id:d.id, ...d.data()})).sort((a,b)=>(b.startedAt||0)-(a.startedAt||0));
         render();
@@ -223,9 +224,8 @@ async function initDb(){
 function saveRecord(rec, cb){
   const id = 'a_' + Date.now() + '_' + Math.random().toString(36).slice(2,8);
   if(db && !usingLocal){
-    db.collection('atendimentos').doc(id).set(rec).then(()=>cb&&cb(id)).catch(()=>{
-      records.unshift({id, ...rec}); saveLocalRecords(); render(); cb&&cb(id);
-    });
+    db.collection('atendimentos').doc(id).set(rec).catch(()=>{});
+    cb&&cb(id);
   } else { records.unshift({id, ...rec}); saveLocalRecords(); render(); cb&&cb(id); }
 }
 function updateClientLastVisit(clientId, rec){
