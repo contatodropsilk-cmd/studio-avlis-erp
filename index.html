@@ -604,28 +604,53 @@ function reportsFilterRecords(period){
   const cutoff = now - days*86400000;
   return records.filter(r=>(r.startedAt||r.createdAt) >= cutoff);
 }
+// Divide um atendimento em partes, uma por serviço (tempo, valor e custos de cada um).
+function explodeRecord(r){
+  const dur = r.durationMin||0;
+  const sv = (r.servicos||[]).filter(x=>x && x.id);
+  if(sv.length<=1){
+    return [{rid:r.id, startedAt:r.startedAt||r.createdAt, service:r.service, label:(sv[0]&&sv[0].label)||r.serviceLabel, min:dur, fat:r.price||0, custoProduto:r.productCost||0, custoParceira:r.partnerCost||0, cliente:r.clientName||'', parte:false}];
+  }
+  const sumMin = sv.reduce((a,x)=>a+(x.min||0),0);
+  const mins = sv.map(x=> sumMin>0 ? (x.min||0) : dur/sv.length);
+  const items = (r.items||[]).slice();
+  const used = new Set(); const fats = sv.map(()=>0);
+  sv.forEach((x,i)=>{
+    const k = items.findIndex((it,ix)=>!used.has(ix) && (i===0 ? ix===0 : it.label===x.label));
+    if(k>=0){ used.add(k); fats[i]=items[k].price||0; }
+  });
+  items.forEach((it,ix)=>{ if(!used.has(ix)) fats[0]+=it.price||0; });
+  const totalMin = mins.reduce((a,b)=>a+b,0)||1;
+  return sv.map((x,i)=>({
+    rid:r.id, startedAt:r.startedAt||r.createdAt, service:x.id, label:x.label, min:Math.round(mins[i]*10)/10, fat:fats[i],
+    custoProduto:(r.productCost||0)*mins[i]/totalMin, custoParceira:i===0?(r.partnerCost||0):0, cliente:r.clientName||'', parte:true
+  }));
+}
+function explodeAll(list){ return list.flatMap(explodeRecord); }
 function computeServiceStats(filtered){
   const map = {};
-  filtered.forEach(r=>{
-    if(!map[r.service]) map[r.service] = {serviceId:r.service, label:r.serviceLabel, n:0, min:0, fat:0, custoProduto:0, custoParceira:0};
-    const s = map[r.service];
-    s.n++; s.min += (r.durationMin||0); s.fat += (r.price||0); s.custoProduto += (r.productCost||0); s.custoParceira += (r.partnerCost||0);
+  explodeAll(filtered).forEach(p=>{
+    if(!map[p.service]) map[p.service] = {serviceId:p.service, label:p.label, n:0, min:0, fat:0, custoProduto:0, custoParceira:0, minList:[]};
+    const s = map[p.service];
+    s.n++; s.min += p.min; s.fat += p.fat; s.custoProduto += p.custoProduto; s.custoParceira += p.custoParceira; s.minList.push(p.min);
   });
   return Object.values(map).map(s=>{
     const margem = s.fat - s.custoProduto - s.custoParceira;
     const horas = s.min/60;
     const avgDuration = s.n>0 ? Math.round(s.min/s.n) : 0;
-    return Object.assign(s, {margem, horas, margemHora: horas>0?margem/horas:0, avgDuration});
+    const minMin = s.minList.length?Math.round(Math.min(...s.minList)):0, maxMin = s.minList.length?Math.round(Math.max(...s.minList)):0;
+    return Object.assign(s, {margem, horas, margemHora: horas>0?margem/horas:0, avgDuration, minMin, maxMin});
   }).sort((a,b)=>b.margemHora-a.margemHora);
 }
 function buildCsv(){
-  const header = ['data','hora_inicio','servico','cliente','duracao_min','valor','custo_produto','custo_parceira','margem'];
-  const rows = records.slice().sort((a,b)=>(a.startedAt||0)-(b.startedAt||0)).map(r=>{
-    const d = new Date(r.startedAt||r.createdAt);
-    const dataStr = fmtDateLabel(todayKey(r.startedAt||r.createdAt));
+  const header = ['data','hora_inicio','servico','cliente','duracao_min','valor','custo_produto','custo_parceira','margem','atendimento_com_varios_servicos'];
+  const rows = explodeAll(records.slice().sort((a,b)=>(a.startedAt||0)-(b.startedAt||0))).map(p=>{
+    const d = new Date(p.startedAt);
+    const dataStr = fmtDateLabel(todayKey(p.startedAt));
     const horaStr = d.toTimeString().slice(0,5);
-    const margem = (r.price||0)-(r.productCost||0)-(r.partnerCost||0);
-    return [dataStr, horaStr, r.serviceLabel, r.clientName||'', r.durationMin||0, r.price||0, r.productCost||0, r.partnerCost||0, margem];
+    const r2=x=>Math.round(x*100)/100;
+    const margem = r2(p.fat-p.custoProduto-p.custoParceira);
+    return [dataStr, horaStr, p.label, p.cliente, Math.round(p.min), r2(p.fat), r2(p.custoProduto), r2(p.custoParceira), margem, p.parte?'sim':'não'];
   });
   const csvLines = [header.join(';')].concat(rows.map(row=>row.map(v=>String(v).replace(/;/g,',')).join(';')));
   return csvLines.join('\n');
@@ -1342,6 +1367,7 @@ function renderRecordRow(r){
     <div>
       <p class="font-medium text-sm">${r.serviceLabel}${r.clientName?' · '+r.clientName:''}</p>
       <p class="text-xs opacity-60">${r.durationMin} min · ${fmtMoney(r.price||0)}</p>
+      ${(r.servicos&&r.servicos.length>1)?`<p class="text-xs opacity-60 mt-1">${r.servicos.map(x=>x.label+' '+x.min+' min').join(' · ')}</p>`:''}
     </div>
     <div class="text-right">
       <p class="text-sm font-semibold" style="color:var(--green)">${fmtMoney(margem)}</p>
@@ -2623,6 +2649,23 @@ function renderReports(){
       <div><span class="opacity-60 text-xs">Horas</span><br><b>${totalHoras.toFixed(1)}h</b></div>
     </div>`;
   wrap.appendChild(summary);
+
+  // tempo na cadeira por serviço
+  const totalMinAll = stats.reduce((a,s)=>a+s.min,0)||1;
+  const byTime = stats.slice().sort((a,b)=>b.min-a.min);
+  wrap.appendChild(el('p','text-sm font-semibold mb-1','Tempo na cadeira por serviço'));
+  wrap.appendChild(el('p','text-xs opacity-60 mb-2','Quanto cada serviço ocupa da sua agenda (atendimentos com vários serviços são separados pelo cronômetro).'));
+  const tbox = el('div','rounded-2xl p-3 mb-5 bg-white shadow-sm'); tbox.style.border='1px solid var(--hairline)';
+  byTime.forEach(s=>{
+    const pct = Math.round(s.min/totalMinAll*100);
+    const line = el('div','mb-3');
+    line.innerHTML = `<div class="flex justify-between text-sm"><span class="font-medium">${s.label}</span><b>${(s.min/60).toFixed(1)}h · ${pct}%</b></div>
+      <div style="height:6px;border-radius:6px;background:var(--rose-light);margin:4px 0"><div style="height:6px;border-radius:6px;background:var(--rose);width:${Math.max(2,pct)}%"></div></div>
+      <p class="text-xs opacity-60">${s.n}x · média ${s.avgDuration} min · menor ${s.minMin} · maior ${s.maxMin} min</p>`;
+    tbox.appendChild(line);
+  });
+  wrap.appendChild(tbox);
+  wrap.appendChild(el('p','text-sm font-semibold mb-2','Margem por hora de cada serviço'));
 
   stats.forEach((s, i)=>{
     const svc = serviceById(s.serviceId);
