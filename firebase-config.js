@@ -7,3 +7,5 @@ window.FIREBASE_CONFIG = {
   messagingSenderId: "440327842676",
   appId: "1:440327842676:web:33e40a809452308b751a21",
 };
+// E-mails que sempre são "dona" (acesso total). Outras pessoas são liberadas dentro do app, em Financeiro → Acesso ao app.
+window.OWNER_EMAILS = ['studioavlis@gmail.com'];

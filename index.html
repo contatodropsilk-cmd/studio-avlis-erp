@@ -13,6 +13,7 @@
 <link rel="icon" href="icons/icon-192.png">
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
 <script src="firebase-config.js"></script>
 <title>Studio Avlis — Atendimentos</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -117,7 +118,9 @@ let config = Object.assign({}, DEFAULT_CONFIG);
 
 function isOwnerUnlocked(){ try{ return localStorage.getItem('avlis_owner_unlocked')==='1'; }catch(e){ return false; } }
 function setOwnerUnlocked(){ try{ localStorage.setItem('avlis_owner_unlocked','1'); }catch(e){} }
+const AUTH_MODE = !!(typeof window!=='undefined' && window.FIREBASE_CONFIG && window.FIREBASE_CONFIG.apiKey);
 function detectInitialRole(){
+  if(AUTH_MODE) return 'auth';
   try{
     const h = (location.hash||'').replace('#','').toLowerCase().trim();
     if(h==='profissional' || h==='equipe' || h==='agenda-profissional'){ saveRole('pro'); return 'pro'; }
@@ -129,8 +132,9 @@ function detectInitialRole(){
 }
 const INITIAL_ROLE = detectInitialRole();
 let state = {
-  screen: INITIAL_ROLE==='pro' ? 'pro-home' : (INITIAL_ROLE==='owner' ? 'home' : 'pin-lock'),
-  role: INITIAL_ROLE==='locked' ? null : INITIAL_ROLE,
+  screen: INITIAL_ROLE==='auth' ? 'loading' : (INITIAL_ROLE==='pro' ? 'pro-home' : (INITIAL_ROLE==='owner' ? 'home' : 'pin-lock')),
+  role: (INITIAL_ROLE==='locked'||INITIAL_ROLE==='auth') ? null : INITIAL_ROLE,
+  loginError:'', userEmail:'', novoAcesso:{email:'',papel:'profissional'},
   pinInput: '', pinError: false,
   service: null,
   timer: { status:'idle', startedAt:null, accumulated:0, stockUsage:[], insumoSelectedId:null, insumoQty:'', showInsumoForm:false },
@@ -186,42 +190,163 @@ function saveLocalCustos(){ try{ localStorage.setItem('avlis_custos', JSON.strin
 function loadLocalEstoque(){ try{ const raw=localStorage.getItem('avlis_estoque'); estoque = raw?JSON.parse(raw):[]; }catch(e){ estoque=[]; } }
 function saveLocalEstoque(){ try{ localStorage.setItem('avlis_estoque', JSON.stringify(estoque)); }catch(e){} }
 
+let unsubs = [];
+let acessos = [];
+function stopListeners(){
+  unsubs.forEach(f=>{ try{ f(); }catch(e){} }); unsubs=[];
+  records=[]; clients=[]; agendamentos=[]; custos=[]; estoque=[]; acessos=[];
+  window.__syncPending = {};
+}
+function listen(name, ref, apply){
+  try{
+    const watch = !!window.__syncWatch;
+    let first = true;
+    const cb = snap=>{
+      const changed = first || !watch || (snap.docChanges ? snap.docChanges().length>0 : true);
+      first = false;
+      apply(snap);
+      if(watch && snap.metadata){ window.__syncPending[name] = snap.metadata.hasPendingWrites; }
+      if(changed) render(); else renderSyncDot();
+    };
+    const u = watch ? ref.onSnapshot({includeMetadataChanges:true}, cb, ()=>{}) : ref.onSnapshot(cb, ()=>{});
+    if(typeof u==='function') unsubs.push(u);
+  }catch(e){}
+}
+function startListeners(role){
+  stopListeners();
+  const isPro = role==='pro';
+  const col = n=>db.collection(n);
+  const mapDocs = snap=>snap.docs.map(d=>({id:d.id, ...d.data()}));
+  listen('atendimentos', (AUTH_MODE&&isPro) ? col('atendimentos').where('performedBy','==','pro') : col('atendimentos'),
+    snap=>{ records = mapDocs(snap).sort((a,b)=>(b.startedAt||0)-(a.startedAt||0)); });
+  listen('clientes', col('clientes'), snap=>{ clients = mapDocs(snap); });
+  listen('agendamentos', col('agendamentos'), snap=>{ agendamentos = mapDocs(snap); });
+  listen('estoque', col('estoque'), snap=>{ estoque = mapDocs(snap); });
+  if(!isPro){
+    listen('custos', col('custos'), snap=>{ custos = mapDocs(snap); });
+    listen('config', db.doc('config/geral'), snap=>{
+      const data = snap && typeof snap.data === 'function' ? snap.data() : null;
+      if(data) config = Object.assign({}, DEFAULT_CONFIG, data);
+    });
+    if(AUTH_MODE) listen('acesso', col('acesso'), snap=>{ acessos = mapDocs(snap); });
+  }
+}
+function papelCacheKey(email){ return 'avlis_papel_'+email; }
+async function resolvePapel(email){
+  if((window.OWNER_EMAILS||[]).map(e=>e.toLowerCase()).includes(email)) return 'dona';
+  try{
+    const d = await db.doc('acesso/'+email).get();
+    const papel = d.exists ? (d.data().papel||'profissional') : 'nenhum';
+    try{ localStorage.setItem(papelCacheKey(email), papel); }catch(e){}
+    return papel;
+  }catch(e){
+    try{ return localStorage.getItem(papelCacheKey(email)) || 'nenhum'; }catch(e2){ return 'nenhum'; }
+  }
+}
+async function handleAuth(user){
+  if(!user){
+    stopListeners(); state.role=null; state.userEmail=''; state.screen='login'; render(); return;
+  }
+  const email = (user.email||'').toLowerCase();
+  state.userEmail = email;
+  const papel = await resolvePapel(email);
+  if(papel==='dona'){
+    state.role='owner'; state.screen = (state.screen==='loading'||state.screen==='login'||state.screen==='denied') ? 'home' : state.screen;
+    startListeners('owner');
+  } else if(papel==='profissional'){
+    state.role='pro'; state.screen = (state.screen==='loading'||state.screen==='login'||state.screen==='denied') ? 'pro-home' : state.screen;
+    startListeners('pro');
+  } else {
+    stopListeners(); state.role=null; state.screen='denied';
+  }
+  render();
+}
+function loginGoogle(){
+  state.loginError=''; render();
+  const auth = firebase.auth();
+  const prov = new firebase.auth.GoogleAuthProvider(); prov.setCustomParameters({prompt:'select_account'});
+  auth.signInWithPopup(prov).catch(e=>{
+    const c = e && e.code;
+    if(c==='auth/popup-blocked' || c==='auth/operation-not-supported-in-this-environment'){ auth.signInWithRedirect(prov); return; }
+    if(c==='auth/popup-closed-by-user' || c==='auth/cancelled-popup-request') return;
+    state.loginError = c==='auth/unauthorized-domain' ? 'Este endereço ainda não foi liberado no Firebase (Authentication → Settings → Authorized domains).' : 'Não foi possível entrar ('+(c||'erro')+'). Tente de novo.';
+    render();
+  });
+}
+function logout(){
+  stopListeners(); state.role=null; state.screen='login'; render();
+  try{ firebase.auth().signOut(); }catch(e){}
+}
+function addAcesso(){
+  const email=(state.novoAcesso.email||'').trim().toLowerCase();
+  if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)){ showToast('Digite um e-mail válido.'); return; }
+  db.doc('acesso/'+email).set({papel:state.novoAcesso.papel, criadoEm:Date.now()}).catch(()=>showToast('Não foi possível liberar. Tente de novo.'));
+  state.novoAcesso.email=''; showToast('Acesso liberado para '+email);
+  render();
+}
+function removeAcesso(email){
+  if(!confirm('Tirar o acesso de '+email+'?')) return;
+  db.doc('acesso/'+email).delete().catch(()=>{});
+  showToast('Acesso removido.');
+}
+function renderLogin(){
+  const wrap=el('div','text-center mt-16');
+  wrap.appendChild(el('h1','text-2xl font-bold mb-1','Studio Avlis'));
+  wrap.appendChild(el('p','text-sm opacity-60 mb-8','Entre com a sua conta Google para continuar.'));
+  const b=bigButton('Entrar com Google','var(--rose)',loginGoogle); b.style.maxWidth='320px'; b.style.margin='0 auto'; wrap.appendChild(b);
+  if(state.loginError){ const e=el('p','text-sm mt-4',state.loginError); e.style.color='var(--danger)'; wrap.appendChild(e); }
+  return wrap;
+}
+function renderLoading(){ const w=el('div','text-center mt-24'); w.appendChild(el('p','text-sm opacity-60','Carregando…')); return w; }
+function renderDenied(){
+  const wrap=el('div','text-center mt-16 px-4');
+  wrap.appendChild(el('h1','text-xl font-bold mb-2','Sem acesso ainda'));
+  wrap.appendChild(el('p','text-sm opacity-70 mb-6',`A conta ${state.userEmail} ainda não foi liberada. Peça para a dona liberar em Financeiro → Acesso ao app, ou entre com outra conta.`));
+  const b=bigButton('Entrar com outra conta','var(--rose)',logout); b.style.maxWidth='320px'; b.style.margin='0 auto'; wrap.appendChild(b);
+  return wrap;
+}
+function renderAcessoCard(){
+  const card=el('div','rounded-2xl p-4 mt-4 bg-white shadow-sm'); card.style.border='1px solid var(--rose-light)';
+  card.innerHTML = `<p class="text-sm font-semibold mb-1">Acesso ao app</p><p class="text-xs opacity-60 mb-3">Quem pode entrar com Google. “Profissional” vê só a agenda e os próprios atendimentos; “Dona” vê tudo.</p>`;
+  const list = el('div','space-y-2 mb-3');
+  const logged = state.userEmail;
+  const all = [{id:logged, papel:'dona', fixo:true}].concat(acessos.filter(a=>a.id!==logged));
+  all.forEach(a=>{
+    const row=el('div','flex items-center justify-between text-sm');
+    row.innerHTML=`<span style="overflow-wrap:anywhere">${a.id}<br><span class="text-xs opacity-60">${a.papel==='dona'?'Dona':'Profissional'}${a.fixo?' · você':''}</span></span>`;
+    if(!a.fixo){ const r=el('button','tap text-xs underline','remover'); r.style.color='var(--danger)'; r.onclick=()=>removeAcesso(a.id); row.appendChild(r); }
+    list.appendChild(row);
+  });
+  card.appendChild(list);
+  const inp=el('input'); inp.type='email'; inp.placeholder='e-mail Google da pessoa'; inp.value=state.novoAcesso.email; inp.autocapitalize='none';
+  inp.style.cssText='width:100%;padding:10px;border-radius:12px;border:1px solid var(--rose-light);margin-bottom:8px;font-size:15px';
+  inp.oninput=e=>{ state.novoAcesso.email=e.target.value; };
+  card.appendChild(inp);
+  const row2=el('div','flex gap-2');
+  const sel=el('select'); sel.style.cssText='flex:1;padding:10px;border-radius:12px;border:1px solid var(--rose-light);font-size:15px;background:#fff';
+  [['profissional','Profissional'],['dona','Dona']].forEach(([v,l])=>{ const o=el('option',null,l); o.value=v; if(state.novoAcesso.papel===v) o.selected=true; sel.appendChild(o); });
+  sel.onchange=e=>{ state.novoAcesso.papel=e.target.value; };
+  const add=el('button','tap text-sm py-2.5 px-4 rounded-xl text-white','Liberar'); add.style.background='var(--rose)'; add.onclick=addAcesso;
+  row2.appendChild(sel); row2.appendChild(add); card.appendChild(row2);
+  const out=el('button','tap w-full text-xs underline mt-4 opacity-70',`Sair da conta (${logged})`); out.onclick=logout; card.appendChild(out);
+  return card;
+}
+
 async function initDb(){
   try{
-    const hasConfig = typeof window.FIREBASE_CONFIG !== 'undefined' && window.FIREBASE_CONFIG && window.FIREBASE_CONFIG.apiKey;
-    if(hasConfig && typeof firebase !== 'undefined'){
+    if(AUTH_MODE && typeof firebase!=='undefined'){
       firebase.initializeApp(window.FIREBASE_CONFIG);
       db = firebase.firestore();
       try{ db.enablePersistence({synchronizeTabs:true}).catch(()=>{}); }catch(e){}
-      window.__syncWatch=true;
-      ['atendimentos','clientes','agendamentos','custos','estoque'].forEach(col=>{
-        try{ db.collection(col).onSnapshot({includeMetadataChanges:true}, snap=>{ window.__syncPending[col]=snap.metadata.hasPendingWrites; renderSyncDot(); }, ()=>{}); }catch(e){}
-      });
-      try{ db.collection('atendimentos').onSnapshot(snap=>{
-        records = snap.docs.map(d=>({id:d.id, ...d.data()})).sort((a,b)=>(b.startedAt||0)-(a.startedAt||0));
-        render();
-      }); }catch(e){}
-      try{ db.collection('clientes').onSnapshot(snap=>{
-        clients = snap.docs.map(d=>({id:d.id, ...d.data()}));
-        render();
-      }); }catch(e){}
-      try{ db.collection('agendamentos').onSnapshot(snap=>{
-        agendamentos = snap.docs.map(d=>({id:d.id, ...d.data()}));
-        render();
-      }); }catch(e){}
-      try{ db.collection('custos').onSnapshot(snap=>{
-        custos = snap.docs.map(d=>({id:d.id, ...d.data()}));
-        render();
-      }); }catch(e){}
-      try{ db.collection('estoque').onSnapshot(snap=>{
-        estoque = snap.docs.map(d=>({id:d.id, ...d.data()}));
-        render();
-      }); }catch(e){}
-      try{ db.doc('config/geral').onSnapshot(snap=>{
-        const data = snap && typeof snap.data === 'function' ? snap.data() : null;
-        if(data) config = Object.assign({}, DEFAULT_CONFIG, data);
-        render();
-      }); }catch(e){}
+      window.__syncWatch = true;
+      try{ firebase.auth().getRedirectResult().catch(()=>{}); }catch(e){}
+      firebase.auth().onAuthStateChanged(handleAuth);
+      return;
+    }
+    const cap = await claude.use('db');
+    if(cap){
+      db = cap;
+      startListeners('owner');
     } else {
       usingLocal = true;
       loadLocalRecords(); loadLocalClients(); loadLocalConfig(); loadLocalAgendamentos(); loadLocalCustos(); loadLocalEstoque();
@@ -896,6 +1021,9 @@ function render(){
   else if(state.screen==='fechamento') app.appendChild(renderFechamento());
   else if(state.screen==='pro-home') app.appendChild(renderProHome());
   else if(state.screen==='pro-agenda') app.appendChild(renderAgenda());
+  else if(state.screen==='loading') app.appendChild(renderLoading());
+  else if(state.screen==='login') app.appendChild(renderLogin());
+  else if(state.screen==='denied') app.appendChild(renderDenied());
   else if(state.screen==='pin-lock'){
     app.appendChild(renderPinLock());
     const pinEl=document.getElementById('pin-input');
@@ -1133,9 +1261,9 @@ function renderProHome(){
 
   const exitLink=el('p','text-sm text-center mt-8 underline');
   exitLink.style.opacity='0.7';
-  exitLink.innerHTML = 'Sou a dona do studio — entrar com PIN';
+  exitLink.innerHTML = AUTH_MODE ? 'Sair da conta ('+state.userEmail+')' : 'Sou a dona do studio — entrar com PIN';
   exitLink.style.cursor='pointer';
-  exitLink.onclick = exitProMode;
+  exitLink.onclick = AUTH_MODE ? logout : exitProMode;
   wrap.appendChild(exitLink);
 
   return wrap;
@@ -1704,6 +1832,7 @@ function renderFinance(){
   const b2 = el('button','tap flex-1 text-sm py-2.5 rounded-xl','Importar backup'); b2.style.background='var(--rose-light)'; b2.style.color='var(--rose-dark)'; b2.onclick=pickBackupFile;
   bkRow.appendChild(b1); bkRow.appendChild(b2); bk.appendChild(bkRow);
   wrap.appendChild(bk);
+  if(AUTH_MODE) wrap.appendChild(renderAcessoCard());
   return wrap;
 }
 

@@ -1,0 +1,40 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null && request.auth.token.email_verified == true; }
+    function mail() { return request.auth.token.email.lower(); }
+    function acessoPath() { return /databases/$(database)/documents/acesso/$(mail()); }
+    function hasAcesso() { return exists(acessoPath()); }
+    function papel() { return get(acessoPath()).data.papel; }
+    function isOwner() { return signedIn() && (mail() == 'studioavlis@gmail.com' || (hasAcesso() && papel() == 'dona')); }
+    function isPro() { return signedIn() && hasAcesso() && papel() == 'profissional'; }
+
+    match /acesso/{email} {
+      allow read: if isOwner() || (signedIn() && email == mail());
+      allow write: if isOwner();
+    }
+    match /atendimentos/{id} {
+      allow read: if isOwner() || (isPro() && resource.data.performedBy == 'pro');
+      allow create: if isOwner() || (isPro() && request.resource.data.performedBy == 'pro');
+      allow update, delete: if isOwner();
+    }
+    match /clientes/{id} {
+      allow read, create, update: if isOwner() || isPro();
+      allow delete: if isOwner();
+    }
+    match /agendamentos/{id} {
+      allow read, create, update, delete: if isOwner() || isPro();
+    }
+    match /estoque/{id} {
+      allow read, update: if isOwner() || isPro();
+      allow create, delete: if isOwner();
+    }
+    match /custos/{id} {
+      allow read, write: if isOwner();
+    }
+    match /config/{id} {
+      allow read, write: if isOwner();
+    }
+  }
+}
