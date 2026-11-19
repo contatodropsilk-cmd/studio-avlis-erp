@@ -30,6 +30,10 @@ service cloud.firestore {
       allow read, update: if isOwner() || isPro();
       allow create, delete: if isOwner();
     }
+    match /pacotes/{id} {
+      allow read: if isOwner() || isPro();
+      allow create, update, delete: if isOwner();
+    }
     match /custos/{id} {
       allow read, write: if isOwner();
     }

@@ -160,6 +160,7 @@ let clients = [];
 let agendamentos = [];
 let custos = [];
 let estoque = [];
+let pacotes = [];
 let config = Object.assign({}, DEFAULT_CONFIG);
 
 function isOwnerUnlocked(){ try{ return localStorage.getItem('avlis_owner_unlocked')==='1'; }catch(e){ return false; } }
@@ -201,7 +202,7 @@ let state = {
     suggestion:null, lastVisitInfo:null,
     price:null, customPrice:'', productCost:0, customCost:'',
     partnerCost:0, partnerCostManual:false, note:'',
-    paymentMethod:null, extraItems:[], extraLabel:'', extraPrice:'',
+    paymentMethod:null, usePacoteId:null, priceBeforePacote:null, extraItems:[], extraLabel:'', extraPrice:'',
     stockUsage:[], stockUsageSelectedId:null, stockUsageQty:'',
   },
 };
@@ -230,6 +231,8 @@ function checkPin(){
 function loadLocalConfig(){ try{ const raw=localStorage.getItem('avlis_config'); if(raw) config=Object.assign({},DEFAULT_CONFIG,JSON.parse(raw)); }catch(e){} }
 function saveLocalConfig(){ try{ localStorage.setItem('avlis_config', JSON.stringify(config)); }catch(e){} }
 function loadLocalAgendamentos(){ try{ const raw=localStorage.getItem('avlis_agendamentos'); agendamentos = raw?JSON.parse(raw):[]; }catch(e){ agendamentos=[]; } }
+function loadLocalPacotes(){ try{ const raw=localStorage.getItem('avlis_pacotes'); pacotes = raw?JSON.parse(raw):[]; }catch(e){ pacotes=[]; } }
+function saveLocalPacotes(){ try{ localStorage.setItem('avlis_pacotes', JSON.stringify(pacotes)); }catch(e){} }
 function saveLocalAgendamentos(){ try{ localStorage.setItem('avlis_agendamentos', JSON.stringify(agendamentos)); }catch(e){} }
 function loadLocalCustos(){ try{ const raw=localStorage.getItem('avlis_custos'); custos = raw?JSON.parse(raw):[]; }catch(e){ custos=[]; } }
 function saveLocalCustos(){ try{ localStorage.setItem('avlis_custos', JSON.stringify(custos)); }catch(e){} }
@@ -240,7 +243,7 @@ let unsubs = [];
 let acessos = [];
 function stopListeners(){
   unsubs.forEach(f=>{ try{ f(); }catch(e){} }); unsubs=[];
-  records=[]; clients=[]; agendamentos=[]; custos=[]; estoque=[]; acessos=[];
+  records=[]; clients=[]; agendamentos=[]; custos=[]; estoque=[]; acessos=[]; pacotes=[];
   window.__syncPending = {};
 }
 function listen(name, ref, apply){
@@ -268,6 +271,7 @@ function startListeners(role){
   listen('clientes', col('clientes'), snap=>{ clients = mapDocs(snap); });
   listen('agendamentos', col('agendamentos'), snap=>{ agendamentos = mapDocs(snap); });
   listen('estoque', col('estoque'), snap=>{ estoque = mapDocs(snap); });
+  listen('pacotes', col('pacotes'), snap=>{ pacotes = mapDocs(snap); });
   if(!isPro){
     listen('custos', col('custos'), snap=>{ custos = mapDocs(snap); });
     listen('config', db.doc('config/geral'), snap=>{
@@ -395,12 +399,12 @@ async function initDb(){
       startListeners('owner');
     } else {
       usingLocal = true;
-      loadLocalRecords(); loadLocalClients(); loadLocalConfig(); loadLocalAgendamentos(); loadLocalCustos(); loadLocalEstoque();
+      loadLocalRecords(); loadLocalClients(); loadLocalConfig(); loadLocalAgendamentos(); loadLocalCustos(); loadLocalEstoque(); loadLocalPacotes();
       render();
     }
   }catch(e){
     usingLocal = true;
-    loadLocalRecords(); loadLocalClients(); loadLocalConfig(); loadLocalAgendamentos(); loadLocalCustos(); loadLocalEstoque();
+    loadLocalRecords(); loadLocalClients(); loadLocalConfig(); loadLocalAgendamentos(); loadLocalCustos(); loadLocalEstoque(); loadLocalPacotes();
     render();
   }
 }
@@ -577,6 +581,164 @@ function saveConfig(patch){
   render();
 }
 
+// ---------- pacotes de tratamento ----------
+const PACOTE_CAT = 'Pacotes de tratamento';
+const PACOTE_SESSOES = 4; // 3 tratamentos + 1 brinde
+const PACOTE_DIAS = 35;   // 5 semanas
+function fmtDM(ts){ const d=new Date(ts); return String(d.getDate()).padStart(2,'0')+'/'+String(d.getMonth()+1).padStart(2,'0'); }
+function pacoteInfo(p){
+  const usos=(p.usos||[]).length, total=p.sessoesTotal||PACOTE_SESSOES, restantes=Math.max(0,total-usos);
+  const t0=new Date(); t0.setHours(0,0,0,0); const diasRest=Math.floor(((p.venceEm||0)-t0.getTime())/86400000);
+  const status = restantes===0 ? 'concluido' : ((p.venceEm||0)<Date.now() ? 'vencido' : 'ativo');
+  return {usos,total,restantes,diasRest,status};
+}
+function pacotesAtivosDaCliente(clientId){
+  if(!clientId) return [];
+  return pacotes.filter(p=>p.clientId===clientId && pacoteInfo(p).status==='ativo').sort((a,b)=>a.venceEm-b.venceEm);
+}
+function savePacote(p){
+  const id='p_'+Date.now()+'_'+Math.random().toString(36).slice(2,8);
+  if(db && !usingLocal){ db.collection('pacotes').doc(id).set(p).catch(()=>{}); }
+  pacotes.unshift({id,...p}); if(usingLocal) saveLocalPacotes();
+  return id;
+}
+function updatePacote(id, patch){
+  if(db && !usingLocal){ db.collection('pacotes').doc(id).update(patch).catch(()=>{}); }
+  const p=pacotes.find(x=>x.id===id); if(p){ Object.assign(p,patch); if(usingLocal) saveLocalPacotes(); }
+}
+function registrarUsoPacote(id, extra){
+  const p=pacotes.find(x=>x.id===id); if(!p) return;
+  const usos=(p.usos||[]).concat([Object.assign({ts:Date.now(), n:(p.usos||[]).length+1}, extra||{})]);
+  updatePacote(id,{usos});
+}
+function sessaoManualPacote(id){
+  const p=pacotes.find(x=>x.id===id); if(!p) return;
+  if(!confirm('Registrar uma sessão usada do pacote de '+p.clientName+'?')) return;
+  registrarUsoPacote(id,{manual:true}); showToast('Sessão registrada.'); render();
+}
+function desfazerSessaoPacote(id){
+  const p=pacotes.find(x=>x.id===id); if(!p||!(p.usos||[]).length) return;
+  if(!confirm('Desfazer a última sessão registrada?')) return;
+  updatePacote(id,{usos:p.usos.slice(0,-1)}); showToast('Sessão desfeita.'); render();
+}
+function pacoteMsg(p){
+  const i=pacoteInfo(p); const nome=(p.clientName||'').split(' ')[0];
+  return `Oi ${nome}! Seu pacote (${p.label}) vence dia ${fmtDM(p.venceEm)} e ainda restam ${i.restantes} sessão(ões). Vamos agendar? 💕`;
+}
+function computePacoteAlerts(){
+  return pacotes.map(p=>({p,i:pacoteInfo(p)})).filter(x=>x.i.status==='ativo' && x.i.diasRest<=7).sort((a,b)=>a.p.venceEm-b.p.venceEm);
+}
+// uso do pacote na finalização do atendimento
+function maybeAutoUsePacote(){
+  const d=state.draft; if(!d.clientId || state.role==='pro') return;
+  const pk=pacotesAtivosDaCliente(d.clientId); if(!pk.length) return;
+  const sid=(state.service&&state.service.id)||''; if(!sid.startsWith('trat')) return;
+  d.usePacoteId=pk[0].id; d.priceBeforePacote=d.price; d.price=0; d.customPrice='';
+}
+function toggleUsePacote(id){
+  const d=state.draft;
+  if(d.usePacoteId){ d.usePacoteId=null; d.price = d.priceBeforePacote!=null ? d.priceBeforePacote : ((state.service.prices&&state.service.prices[0])||null); }
+  else { d.usePacoteId=id; d.priceBeforePacote=d.price; d.price=0; d.customPrice=''; }
+  recomputePartnerFromPrice(); render();
+}
+// venda de pacote
+function startVenda(svc){
+  state.venda={svc, clientId:null, clientName:'', clientSearch:'', price:(svc.prices&&svc.prices[0])||0, customPrice:'', payment:null, showNew:false};
+  state.screen='venda-pacote'; render();
+}
+function vendaPickClient(c){ state.venda.clientId=c.id; state.venda.clientName=c.name; render(); }
+function vendaSetPrice(v){ state.venda.price=v; state.venda.customPrice=''; render(); }
+function vendaSetCustom(v){ state.venda.customPrice=v; state.venda.price=parseFloat(String(v).replace(',','.'))||0; }
+function vendaNewClient(){
+  const n=document.getElementById('venda-new-name'), w=document.getElementById('venda-new-wa');
+  const name=n?n.value.trim():''; if(!name) return;
+  createClient(name, w?w.value.trim():'', c=>vendaPickClient(c));
+}
+function confirmarVenda(){
+  const v=state.venda; if(!v||!v.clientId){ showToast('Escolha a cliente.'); return; }
+  if(!(v.price>0)){ showToast('Informe o valor do pacote.'); return; }
+  const svc=v.svc, now=Date.now();
+  const d=new Date(); d.setDate(d.getDate()+PACOTE_DIAS); d.setHours(23,59,59,0);
+  const pid=savePacote({clientId:v.clientId, clientName:v.clientName, serviceId:svc.id, label:svc.label, price:v.price, sessoesTotal:PACOTE_SESSOES, criadoEm:now, venceEm:d.getTime(), usos:[], desc:svc.desc||''});
+  const rec={ service:svc.id, serviceLabel:svc.label, servicos:[], cat:svc.cat, clientId:v.clientId, clientName:v.clientName,
+    startedAt:now, endedAt:now, durationMin:0, price:v.price, items:[{label:svc.label, price:v.price}], paymentMethod:v.payment,
+    productCost:0, partnerCost:0, stockUsage:[], performedBy:'owner', note:'', vendaPacote:true, pacoteId:pid, createdAt:now };
+  saveRecord(rec, ()=>{ updateClientLastVisit(v.clientId, rec); });
+  state.venda=null; state.screen='pacotes'; render();
+  showToast('Pacote vendido. Vale até '+fmtDM(d.getTime())+'.');
+}
+function renderVendaPacote(){
+  const v=state.venda; const wrap=el('div');
+  wrap.appendChild(backButton(()=>{ state.venda=null; state.screen='pick'; render(); }));
+  wrap.appendChild(el('h2','text-xl font-bold mb-1','Vender pacote'));
+  wrap.appendChild(el('p','text-sm font-medium mb-1',v.svc.label));
+  if(v.svc.desc) wrap.appendChild(el('p','text-xs opacity-60 mb-4',v.svc.desc));
+  wrap.appendChild(el('p','text-xs uppercase tracking-wide opacity-50 mb-2','Cliente'));
+  if(v.clientId){
+    const cl=el('div','flex items-center justify-between mb-4'); cl.innerHTML='<span class="text-sm">👤 <b>'+v.clientName+'</b></span>';
+    const tr=el('button','tap text-xs underline opacity-70','trocar'); tr.onclick=()=>{ v.clientId=null; v.clientName=''; render(); }; cl.appendChild(tr); wrap.appendChild(cl);
+  } else {
+    const si=el('input','w-full rounded-xl px-3 py-2 text-sm mb-2'); si.id='venda-search'; si.placeholder='Buscar cliente pelo nome…'; si.value=v.clientSearch; si.style.border='1px solid var(--rose-light)';
+    si.oninput=e=>{ v.clientSearch=e.target.value; render(); }; wrap.appendChild(si);
+    const q=(v.clientSearch||'').trim().toLowerCase();
+    const list=clients.filter(c=>!q||c.name.toLowerCase().includes(q)).slice(0,8);
+    list.forEach(c=>{ const b=el('button','tap w-full text-left rounded-lg px-3 py-2 mb-1 bg-white text-sm shadow-sm',c.name); b.style.border='1px solid var(--hairline)'; b.onclick=()=>vendaPickClient(c); wrap.appendChild(b); });
+    const nb=el('button','tap text-xs underline mt-1 mb-4',v.showNew?'cancelar nova cliente':'+ cliente nova'); nb.onclick=()=>{ v.showNew=!v.showNew; render(); }; wrap.appendChild(nb);
+    if(v.showNew){
+      const n1=el('input','w-full rounded-lg px-2 py-2 text-sm mb-2'); n1.id='venda-new-name'; n1.placeholder='Nome'; n1.style.border='1px solid var(--rose-light)';
+      const n2=el('input','w-full rounded-lg px-2 py-2 text-sm mb-2'); n2.id='venda-new-wa'; n2.placeholder='WhatsApp (opcional)'; n2.inputMode='tel'; n2.style.border='1px solid var(--rose-light)';
+      wrap.appendChild(n1); wrap.appendChild(n2); wrap.appendChild(bigButton('Cadastrar e escolher','var(--rose)',vendaNewClient));
+    }
+  }
+  wrap.appendChild(el('p','text-xs uppercase tracking-wide opacity-50 mb-2 mt-2','Valor pago pelo pacote'));
+  const pc=el('div','flex flex-wrap gap-2 mb-2');
+  (v.svc.prices||[]).forEach(pr=>{ const c=el('button','tap chip px-3 py-2 rounded-full bg-white text-sm shadow-sm',fmtMoney(pr)); c.style.border='1px solid var(--rose-light)'; if(v.price===pr&&v.customPrice==='') c.classList.add('active'); c.onclick=()=>vendaSetPrice(pr); pc.appendChild(c); });
+  wrap.appendChild(pc);
+  const ci=el('input','w-full rounded-xl px-3 py-2 text-sm mb-4'); ci.id='venda-price'; ci.type='text'; ci.inputMode='decimal'; ci.placeholder='Outro valor (R$)'; ci.value=v.customPrice; ci.style.border='1px solid var(--rose-light)'; ci.oninput=e=>vendaSetCustom(e.target.value); wrap.appendChild(ci);
+  wrap.appendChild(el('p','text-xs uppercase tracking-wide opacity-50 mb-2','Forma de pagamento'));
+  const pm=el('div','flex flex-wrap gap-2 mb-5');
+  PAYMENT_METHODS.forEach(m=>{ const c=el('button','tap chip px-3 py-2 rounded-full bg-white text-sm shadow-sm',m); c.style.border='1px solid var(--rose-light)'; if(v.payment===m) c.classList.add('active'); c.onclick=()=>{ v.payment=m; render(); }; pm.appendChild(c); });
+  wrap.appendChild(pm);
+  wrap.appendChild(el('p','text-xs opacity-60 mb-3','O pacote vale por 5 semanas e tem 4 sessões (3 tratamentos + 1 de brinde). Cada sessão é registrada depois, sem cobrar de novo.'));
+  wrap.appendChild(bigButton('Registrar venda','var(--rose)',confirmarVenda));
+  return wrap;
+}
+function goPacotes(){ state.screen='pacotes'; render(); }
+function renderPacotes(){
+  const wrap=el('div');
+  wrap.appendChild(backButton(goHome));
+  wrap.appendChild(el('h2','text-xl font-bold mb-1','Pacotes de tratamento'));
+  wrap.appendChild(el('p','text-xs opacity-60 mb-4','Para vender um pacote: Novo atendimento → Pacotes de tratamento. Valem por 5 semanas.'));
+  const all=pacotes.map(p=>({p,i:pacoteInfo(p)}));
+  const ativos=all.filter(x=>x.i.status==='ativo').sort((a,b)=>a.p.venceEm-b.p.venceEm);
+  const enc=all.filter(x=>x.i.status!=='ativo').sort((a,b)=>b.p.venceEm-a.p.venceEm);
+  if(!ativos.length) wrap.appendChild(el('p','text-sm opacity-60 mb-4','Nenhum pacote ativo agora.'));
+  ativos.forEach(({p,i})=>{
+    const warn=i.diasRest<=7;
+    const card=el('div','rounded-xl p-3 mb-3 bg-white shadow-sm'); card.style.border=warn?'1px solid var(--amber-border)':'1px solid var(--hairline)';
+    const pct=Math.round(i.usos/i.total*100);
+    card.innerHTML=`<p class="font-semibold text-sm">${p.clientName}</p><p class="text-xs opacity-70">${p.label}</p>
+      <div style="height:6px;border-radius:6px;background:var(--rose-light);margin:8px 0"><div style="height:6px;border-radius:6px;background:var(--rose);width:${Math.max(3,pct)}%"></div></div>
+      <p class="text-xs">${i.usos} de ${i.total} sessões usadas · restam <b>${i.restantes}</b></p>
+      <p class="text-xs mt-1" style="color:${warn?'var(--amber)':'inherit'}">${i.diasRest<=0?'vence hoje':'vence em '+i.diasRest+' dia(s)'} (${fmtDM(p.venceEm)})</p>`;
+    const row=el('div','flex flex-wrap gap-2 mt-3');
+    const b1=el('button','tap text-xs px-3 py-2 rounded-lg text-white','Registrar sessão'); b1.style.background='var(--rose)'; b1.onclick=()=>sessaoManualPacote(p.id); row.appendChild(b1);
+    const c=clients.find(x=>x.id===p.clientId);
+    if(c&&c.whatsapp){ const b2=el('a','tap text-xs px-3 py-2 rounded-lg','Avisar no WhatsApp'); b2.style.background='#e6f4ea'; b2.style.color='#1e6b3a'; b2.target='_blank'; b2.href=waLink(c.whatsapp, pacoteMsg(p)); row.appendChild(b2); }
+    if(i.usos>0){ const b3=el('button','tap text-xs px-3 py-2 rounded-lg underline','Desfazer última sessão'); b3.onclick=()=>desfazerSessaoPacote(p.id); row.appendChild(b3); }
+    card.appendChild(row); wrap.appendChild(card);
+  });
+  if(enc.length){
+    wrap.appendChild(el('p','text-xs uppercase tracking-wide opacity-50 mt-5 mb-2','Encerrados'));
+    enc.slice(0,20).forEach(({p,i})=>{
+      const r=el('div','rounded-lg px-3 py-2 mb-1 text-xs bg-white'); r.style.border='1px solid var(--hairline)';
+      r.innerHTML=`<b>${p.clientName}</b> · ${p.label}<br><span class="opacity-60">${i.status==='concluido'?'concluído (todas as sessões usadas)':'venceu em '+fmtDM(p.venceEm)+' com '+i.restantes+' sessão(ões) sem usar'}</span>`;
+      wrap.appendChild(r);
+    });
+  }
+  return wrap;
+}
+
 // ---------- helpers ----------
 function fmtMoney(v){ return 'R$ ' + (Math.round((v||0)*100)/100).toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2}); }
 function fmtClock(ms){
@@ -648,10 +810,15 @@ function explodeRecord(r){
     custoProduto:(r.productCost||0)*mins[i]/totalMin, custoParceira:i===0?(r.partnerCost||0):0, cliente:r.clientName||'', parte:true
   }));
 }
-function explodeAll(list){ return list.flatMap(explodeRecord); }
+function explodeAll(list, forStats){
+  const src = forStats ? list.filter(r=>!r.vendaPacote) : list;
+  const parts = src.flatMap(explodeRecord);
+  if(forStats){ const rat = new Map(src.filter(r=>r.pacoteRateio>0).map(r=>[r.id,r.pacoteRateio])); parts.forEach(p=>{ if(rat.has(p.rid)) p.fat += rat.get(p.rid); }); }
+  return parts;
+}
 function computeServiceStats(filtered){
   const map = {};
-  explodeAll(filtered).forEach(p=>{
+  explodeAll(filtered,true).forEach(p=>{
     if(!map[p.service]) map[p.service] = {serviceId:p.service, label:p.label, n:0, min:0, fat:0, custoProduto:0, custoParceira:0, minList:[]};
     const s = map[p.service];
     s.n++; s.min += p.min; s.fat += p.fat; s.custoProduto += p.custoProduto; s.custoParceira += p.custoParceira; s.minList.push(p.min);
@@ -696,7 +863,7 @@ async function exportCsv(){ await downloadFile('studio-avlis-atendimentos.csv', 
 function stripId(o){ const c=Object.assign({},o); delete c.id; return c; }
 function buildBackup(){
   return JSON.stringify({ app:'studio-avlis', version:1, exportedAt:new Date().toISOString(),
-    atendimentos:records, clientes:clients, agendamentos, custos, estoque, config }, null, 1);
+    atendimentos:records, clientes:clients, agendamentos, custos, estoque, pacotes, config }, null, 1);
 }
 async function baixarBackup(){
   const ok = await downloadFile('studio-avlis-backup-'+todayKeyNow()+'.json', buildBackup(), 'application/json');
@@ -710,11 +877,11 @@ function pickBackupFile(){
 async function importarBackup(text){
   let data; try{ data=JSON.parse(text); }catch(e){ showToast('Esse arquivo não é um backup válido.'); return; }
   if(!data || data.app!=='studio-avlis'){ showToast('Esse arquivo não é um backup do Studio Avlis.'); return; }
-  const cols = {atendimentos:'atendimentos', clientes:'clientes', agendamentos:'agendamentos', custos:'custos', estoque:'estoque'};
+  const cols = {atendimentos:'atendimentos', clientes:'clientes', agendamentos:'agendamentos', custos:'custos', estoque:'estoque', pacotes:'pacotes'};
   const total = Object.keys(cols).reduce((a,k)=>a+((data[k]||[]).length),0);
   if(!confirm(`Importar ${total} registros desse backup? Os que já existem com o mesmo código são atualizados; nada é apagado.`)) return;
   showToast('Importando… não feche o app.');
-  const locals = {atendimentos:()=>records, clientes:()=>clients, agendamentos:()=>agendamentos, custos:()=>custos, estoque:()=>estoque};
+  const locals = {atendimentos:()=>records, clientes:()=>clients, agendamentos:()=>agendamentos, custos:()=>custos, estoque:()=>estoque, pacotes:()=>pacotes};
   for(const k of Object.keys(cols)){
     const list = data[k]||[];
     if(db && !usingLocal){
@@ -726,7 +893,7 @@ async function importarBackup(text){
       list.forEach(d=>{ if(!d||!d.id) return; const i=arr.findIndex(x=>x.id===d.id); if(i>=0) arr[i]=d; else arr.push(d); });
     }
   }
-  if(usingLocal){ saveLocalRecords(); saveLocalClients(); saveLocalAgendamentos(); saveLocalCustos(); saveLocalEstoque(); }
+  if(usingLocal){ saveLocalRecords(); saveLocalClients(); saveLocalAgendamentos(); saveLocalCustos(); saveLocalEstoque(); saveLocalPacotes(); }
   if(data.config){
     const patch={};
     Object.keys(data.config).forEach(key=>{ if(key==='donaPin'||key==='lastBackupAt') return; if(config[key]===undefined || JSON.stringify(config[key])===JSON.stringify(DEFAULT_CONFIG[key])) patch[key]=data.config[key]; });
@@ -764,6 +931,7 @@ function stopTick(){ if(state.tickHandle){ clearInterval(state.tickHandle); stat
 
 function freshTimer(){ return {svcIds:[],activeSvc:null,svcMs:{},segStart:0,showAddSvc:false,status:'idle',startedAt:null,accumulated:0,stockUsage:[],insumoSelectedId:null,insumoQty:'',showInsumoForm:false,proOwnClient:false,proPrice:'',proClientName:'',proPriceError:false}; }
 function pickService(svc, allIds){
+  if(svc.cat===PACOTE_CAT){ if(state.role==='pro'){ showToast('Pacotes são vendidos pela dona.'); return; } startVenda(svc); return; }
   state.service=svc; state.timer=freshTimer();
   state.timer.svcIds = (allIds && allIds.length) ? allIds.slice() : [svc.id];
   state.timer.activeSvc = svc.id;
@@ -849,7 +1017,7 @@ function finishTimer(){
     price:initialPrice, customPrice:'', productCost:0, customCost:'',
     partnerCost: svc.commissionType==='percent40' ? Math.round((initialPrice||0)*0.4) : (svc.defaultPartner||0),
     partnerCostManual:false, note:'',
-    paymentMethod:null, extraItems:[], extraLabel:'', extraPrice:'',
+    paymentMethod:null, usePacoteId:null, priceBeforePacote:null, extraItems:[], extraLabel:'', extraPrice:'',
     stockUsage: state.timer.stockUsage.slice(), stockUsageSelectedId:null, stockUsageQty:'',
   };
   state.timer.svcIds.slice(1).forEach(id=>{ const sv=serviceById(id); if(sv) state.draft.extraItems.push({label:sv.label, price:(sv.prices&&sv.prices[0])||0}); });
@@ -857,6 +1025,7 @@ function finishTimer(){
     const c = clients.find(c=>c.id===ag.clientId);
     state.draft.suggestion = getSuggestion({id:ag.clientId}, records);
     state.draft.lastVisitInfo = c && c.lastServiceAt ? `Última visita há ${daysSince(c.lastServiceAt)} dia(s) · ${c.lastServiceLabel||''}` : 'Primeira visita registrada';
+    maybeAutoUsePacote();
     state.finishStep = 'details';
   } else {
     state.finishStep = 'client';
@@ -871,8 +1040,8 @@ function recomputePartnerFromPrice(){
     state.draft.partnerCost = Math.round((state.draft.price||0)*0.4);
   }
 }
-function selectPriceChip(v){ state.draft.price=v; state.draft.customPrice=''; recomputePartnerFromPrice(); render(); }
-function setCustomPrice(v){ state.draft.customPrice=v; state.draft.price=v===''?null:parseFloat(v.replace(',','.')); recomputePartnerFromPrice(); render(); }
+function selectPriceChip(v){ state.draft.usePacoteId=null; state.draft.price=v; state.draft.customPrice=''; recomputePartnerFromPrice(); render(); }
+function setCustomPrice(v){ state.draft.usePacoteId=null; state.draft.customPrice=v; state.draft.price=v===''?null:parseFloat(v.replace(',','.')); recomputePartnerFromPrice(); render(); }
 function addCostChip(v){ state.draft.productCost=Math.max(0,(state.draft.productCost||0)+v); render(); }
 function clearCost(){ state.draft.productCost=0; state.draft.customCost=''; render(); }
 function setStockUsageSelected(id){ state.draft.stockUsageSelectedId=id; render(); }
@@ -915,6 +1084,7 @@ function selectClient(c){
   state.draft.clientId=c.id; state.draft.clientName=c.name; state.draft.clientWhatsapp=c.whatsapp||'';
   state.draft.suggestion=getSuggestion(c, records);
   state.draft.lastVisitInfo = c.lastServiceAt ? `Última visita há ${daysSince(c.lastServiceAt)} dia(s) · ${c.lastServiceLabel||''}` : 'Primeira visita registrada';
+  maybeAutoUsePacote();
   state.finishStep='details'; render();
 }
 function submitNewClient(){
@@ -928,7 +1098,8 @@ function skipClient(){ state.draft.clientId=null; state.draft.clientName=''; sta
 function confirmSave(){
   const svc=state.service;
   const durationMin=Math.round(state.timer.accumulated/60000);
-  const mainPrice=state.draft.price||0;
+  const pkUse = state.draft.usePacoteId ? pacotes.find(x=>x.id===state.draft.usePacoteId) : null;
+  const mainPrice= pkUse ? 0 : (state.draft.price||0);
   const extraTotal=extraItemsTotal();
   const items=[{label:svc.label, price:mainPrice}].concat(state.draft.extraItems);
   const rec = {
@@ -941,8 +1112,10 @@ function confirmSave(){
     note:(document.getElementById('note-input')&&document.getElementById('note-input').value)||'',
     createdAt:Date.now(),
   };
+  if(pkUse){ rec.pacoteId=pkUse.id; rec.pacoteSessao=(pkUse.usos||[]).length+1; rec.pacoteRateio=Math.round((pkUse.price||0)/(pkUse.sessoesTotal||PACOTE_SESSOES)*100)/100; }
   state.draft.stockUsage.forEach(u=>registrarUsoEstoque(u.estoqueItemId, u.qty));
   saveRecord(rec, (recordId)=>{
+    if(pkUse) registrarUsoPacote(pkUse.id,{recordId});
     if(state.draft.clientId) updateClientLastVisit(state.draft.clientId, rec);
     if(state.pendingAgendamento){
       const ag = state.pendingAgendamento;
@@ -1141,7 +1314,7 @@ function startFromAgendamento(ag){
 }
 
 // ---------- render ----------
-const MAIN_SCREENS = ['servicos','home','agenda','clients','finance','reports','history','marketing','estoque','insumos-padrao','fechamento'];
+const MAIN_SCREENS = ['pacotes','venda-pacote','servicos','home','agenda','clients','finance','reports','history','marketing','estoque','insumos-padrao','fechamento'];
 const PRO_SCREENS = ['pro-home','pro-agenda'];
 function goEstoque(){ state.screen='estoque'; render(); }
 function goInsumosPadrao(){ state.screen='insumos-padrao'; render(); }
@@ -1168,6 +1341,8 @@ function render(){
   else if(state.screen==='insumos-padrao') app.appendChild(renderInsumosPadrao());
   else if(state.screen==='fechamento') app.appendChild(renderFechamento());
   else if(state.screen==='servicos') app.appendChild(renderServicos());
+  else if(state.screen==='pacotes') app.appendChild(renderPacotes());
+  else if(state.screen==='venda-pacote' && state.venda) app.appendChild(renderVendaPacote());
   else if(state.screen==='pro-home') app.appendChild(renderProHome());
   else if(state.screen==='pro-agenda') app.appendChild(renderAgenda());
   else if(state.screen==='loading') app.appendChild(renderLoading());
@@ -1297,7 +1472,8 @@ function renderHome(){
   const birthdayAlerts = computeBirthdayAlerts();
   const routineAlerts = computeRoutineAlerts();
   const estoqueAlerts = computeEstoqueAlerts();
-  if(birthdayAlerts.length || routineAlerts.length || estoqueAlerts.length){
+  const pacoteAlerts = computePacoteAlerts();
+  if(birthdayAlerts.length || routineAlerts.length || estoqueAlerts.length || pacoteAlerts.length){
     wrap.appendChild(el('p','text-sm font-semibold mb-2', iconLabel('star','Avisos de hoje','var(--amber)')));
     const alertList = el('div','space-y-2 mb-5');
     birthdayAlerts.forEach(c=>{
@@ -1307,6 +1483,10 @@ function renderHome(){
     routineAlerts.forEach(({client,routine,daysSinceLast})=>{
       const msg = config.routineTemplate.replace('{nome}',client.name).replace('{servico}',routine.serviceLabel).replace('{dias}',daysSinceLast);
       alertList.appendChild(renderAlertCard(`${client.name} · ${routine.serviceLabel} (rotina de ${routine.frequencyDays} dias, ${daysSinceLast} dias atrás)`, msg, client.whatsapp, ()=>snoozeRoutine(client.id, routine.id, 3)));
+    });
+    pacoteAlerts.forEach(({p,i})=>{
+      const c=clients.find(x=>x.id===p.clientId);
+      alertList.appendChild(renderAlertCard(`📦 ${p.clientName} · pacote vence ${i.diasRest<=0?'hoje':'em '+i.diasRest+' dia(s)'} (${i.restantes} sessão(ões) sobrando)`, pacoteMsg(p), c&&c.whatsapp, null));
     });
     estoqueAlerts.forEach(a=>{
       const card = el('div','rounded-xl p-3 bg-white shadow-sm'); card.style.border='1px solid var(--danger-border)'; card.style.borderLeft='3px solid var(--danger)';
@@ -1319,6 +1499,11 @@ function renderHome(){
     wrap.appendChild(alertList);
   }
 
+  if(state.role!=='pro'){
+    const nAt=pacotes.filter(x=>pacoteInfo(x).status==='ativo').length;
+    const pb=el('button','tap w-full text-left rounded-xl p-3 mb-4 text-sm bg-white shadow-sm'); pb.style.border='1px solid var(--rose-light)';
+    pb.innerHTML=`📦 <b>Pacotes de tratamento</b> <span class="opacity-60">· ${nAt} ativo(s)</span>`; pb.onclick=goPacotes; wrap.appendChild(pb);
+  }
   if(backupAtrasado()){
     const bb = el('button','tap w-full text-left rounded-xl p-3 mb-4 text-xs'); bb.style.background='var(--amber-light)'; bb.style.border='1px solid var(--amber-border)'; bb.style.color='var(--amber)';
     bb.textContent = config.lastBackupAt ? 'Faz mais de 7 dias do último backup. Toque pra baixar agora.' : 'Você ainda não fez backup dos dados. Toque pra baixar agora.';
@@ -1441,11 +1626,12 @@ function renderPickService(){
   const wrap=el('div');
   wrap.appendChild(backButton(goHome));
   wrap.appendChild(el('h2','text-xl font-bold mb-4','Qual serviço?'));
-  const cats=[...new Set(SERVICES.map(s=>s.cat))];
+  const visSvc = SERVICES.filter(s=>!(s.cat===PACOTE_CAT && state.role==='pro'));
+  const cats=[...new Set(visSvc.map(s=>s.cat))];
   cats.forEach(cat=>{
     wrap.appendChild(el('p','text-xs uppercase tracking-wide opacity-50 mt-4 mb-2',cat));
     const grid=el('div','grid grid-cols-2 gap-2');
-    SERVICES.filter(s=>s.cat===cat).forEach(s=>{
+    visSvc.filter(s=>s.cat===cat).forEach(s=>{
       const b=el('button','tap btn-big rounded-xl bg-white text-sm font-medium px-2 shadow-sm');
       b.style.border='1px solid var(--rose-light)'; b.textContent=s.label; b.onclick=()=>pickService(s);
       grid.appendChild(b);
@@ -1472,7 +1658,7 @@ function renderTimer(){
   const addSvcBtn=el('button','tap text-xs underline opacity-70 mt-2', state.timer.showAddSvc ? 'fechar' : '+ outro serviço neste atendimento'); addSvcBtn.onclick=toggleAddSvc; wrap.appendChild(addSvcBtn);
   if(state.timer.showAddSvc){
     const g=el('div','grid grid-cols-2 gap-1 mt-2 text-left');
-    SERVICES.filter(sv=>!state.timer.svcIds.includes(sv.id)).forEach(sv=>{
+    SERVICES.filter(sv=>sv.cat!==PACOTE_CAT && !state.timer.svcIds.includes(sv.id)).forEach(sv=>{
       const b=el('button','tap text-xs rounded-lg px-2 py-2', sv.label); b.style.background='var(--cream)';
       b.onclick=()=>{ state.timer.showAddSvc=false; switchTimerService(sv.id); };
       g.appendChild(b);
@@ -1607,6 +1793,16 @@ function renderFinishDetails(){
   if(timerServicesInfo().length>1) wrap.appendChild(el('p','text-xs opacity-60 mb-2', timerServicesInfo().map(x=>x.svc.label+': '+x.min+' min').join(' · ')+' — o valor de cada serviço extra está na comanda abaixo.'));
   if(state.draft.clientName) wrap.appendChild(el('p','text-sm opacity-70 mb-1','👤 '+state.draft.clientName));
   if(state.draft.lastVisitInfo) wrap.appendChild(el('p','text-xs opacity-50 mb-3', state.draft.lastVisitInfo));
+  if(state.role!=='pro'){
+    pacotesAtivosDaCliente(state.draft.clientId).forEach(pk=>{
+      const i=pacoteInfo(pk); const on=state.draft.usePacoteId===pk.id;
+      const card=el('div','rounded-xl p-3 mb-4'); card.style.background=on?'#e6f4ea':'var(--cream)'; card.style.border='1px solid var(--rose-light)';
+      card.innerHTML=`<p class="text-sm font-medium">Pacote ativo: ${pk.label}</p><p class="text-xs opacity-70">Esta seria a sessão ${i.usos+1} de ${i.total} · vence em ${Math.max(0,i.diasRest)} dia(s)${i.usos+1===i.total?' · sessão de brinde':''}</p>`;
+      const b=el('button','tap text-sm mt-2 px-3 py-2 rounded-lg', on?'✓ Usando o pacote (valor R$ 0). Toque para cobrar normal':'Usar uma sessão do pacote (valor R$ 0)');
+      b.style.background=on?'#1e6b3a':'var(--rose)'; b.style.color='#fff'; b.onclick=()=>toggleUsePacote(pk.id);
+      card.appendChild(b); wrap.appendChild(card);
+    });
+  }
   if(state.draft.suggestion){
     const sug=el('div','rounded-xl p-3 mb-4 text-sm'); sug.style.background='var(--amber-light)'; sug.style.color='var(--amber)'; sug.style.borderLeft='3px solid var(--amber)';
     sug.innerHTML = `<p class="mb-2" style="color:var(--ink)">${state.draft.suggestion.text}</p>`;
@@ -2463,7 +2659,7 @@ function renderAgendaForm(){
 
   form.appendChild(el('p','text-xs uppercase tracking-wide opacity-50 mb-2 mt-2','Serviços (toque em um ou mais)'));
   const grid=el('div','grid grid-cols-2 gap-1 mb-3');
-  SERVICES.forEach(s=>{
+  SERVICES.filter(s=>s.cat!==PACOTE_CAT).forEach(s=>{
     const b=el('button','tap text-xs rounded-lg px-2 py-2', s.label);
     const on=(state.agenda.serviceIds||[]).includes(s.id);
     b.style.background = on ? 'var(--rose)' : 'var(--cream)';
