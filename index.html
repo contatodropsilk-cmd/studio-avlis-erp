@@ -72,16 +72,19 @@
 <script>
 // ---------- dados base ----------
 const SERVICES = [
-  {id:'mecha_morena', label:'Mechas (morena iluminada)', cat:'Cabelo', prices:[400,450,500,550], defaultPartner:150, estimatedMin:330},
-  {id:'mecha_loira',  label:'Mechas loiras',              cat:'Cabelo', prices:[500,550,600,650], defaultPartner:150, estimatedMin:330},
-  {id:'escova',       label:'Escova',                      cat:'Cabelo', prices:[65,60,70,75,85], studioPct:35, proPay:29.25, precoTabela:65, estimatedMin:45},
+  {id:'mecha_morena', label:'Mechas (morena iluminada)', cat:'Cabelo', prices:[500], defaultPartner:150, estimatedMin:330},
+  {id:'mecha_loira',  label:'Mechas loiras',              cat:'Cabelo', prices:[600], defaultPartner:150, estimatedMin:330},
+  {id:'escova',       label:'Escova',                      cat:'Cabelo', prices:[65], studioPct:35, proPay:29.25, precoTabela:65, estimatedMin:45},
   {id:'coloracao_raiz',label:'Coloração de raiz',          cat:'Cabelo', prices:[130], studioPct:35, proPay:52, precoTabela:130, estimatedMin:90},
+  {id:'portier',      label:'Portier (raiz)',              cat:'Cabelo', prices:[200], estimatedMin:90},
+  {id:'botox',        label:'Botox (raiz)',                cat:'Cabelo', prices:[200], estimatedMin:90},
+  {id:'aplic_coloracao',label:'Aplicação de coloração (raiz)', cat:'Cabelo', prices:[55], estimatedMin:60},
   {id:'corte',        label:'Corte',                       cat:'Cabelo', prices:[65], studioPct:25, proPay:29.25, precoTabela:65, estimatedMin:45},
   {id:'tratamento',   label:'Tratamento',                  cat:'Cabelo', prices:[75,100,150,200], estimatedMin:60},
-  {id:'trat_wella',   label:'Tratamento Wella / L\'Oréal / Redken', cat:'Cabelo', prices:[75,80], studioPct:35, proPay:36, precoTabela:80, estimatedMin:60},
-  {id:'trat_kerastase',label:'Tratamento Kérastase',       cat:'Cabelo', prices:[115,120], studioPct:35, proPay:54, precoTabela:120, estimatedMin:60},
-  {id:'trat_escova_wella',label:'Tratamento + Escova Wella / L\'Oréal / Redken', cat:'Cabelo', prices:[130,140], studioPct:35, proPay:56, precoTabela:140, estimatedMin:90},
-  {id:'trat_escova_kerastase',label:'Tratamento + Escova Kérastase', cat:'Cabelo', prices:[199,210], studioPct:35, proPay:84, precoTabela:210, estimatedMin:90},
+  {id:'trat_wella',   label:'Tratamento Wella / L\'Oréal / Redken', cat:'Cabelo', prices:[80], studioPct:35, proPay:36, precoTabela:80, estimatedMin:60},
+  {id:'trat_kerastase',label:'Tratamento Kérastase',       cat:'Cabelo', prices:[120], studioPct:35, proPay:54, precoTabela:120, estimatedMin:60},
+  {id:'trat_escova_wella',label:'Tratamento + Escova Wella / L\'Oréal / Redken', cat:'Cabelo', prices:[140], studioPct:35, proPay:56, precoTabela:140, estimatedMin:90},
+  {id:'trat_escova_kerastase',label:'Tratamento + Escova Kérastase', cat:'Cabelo', prices:[210], studioPct:35, proPay:84, precoTabela:210, estimatedMin:90},
   {id:'pk_sem_0', label:'Cronograma tratamento sem escova — Curto', cat:'Pacotes de tratamento', prices:[225], estimatedMin:60, desc:'3 tratamentos (Wella / L\'Oréal / Redken) + 1 nutrição Widi Care de brinde. Validade: 5 semanas, depois não pode mais ser usado.'},
   {id:'pk_sem_1', label:'Cronograma tratamento sem escova — Médio', cat:'Pacotes de tratamento', prices:[245], estimatedMin:60, desc:'3 tratamentos (Wella / L\'Oréal / Redken) + 1 nutrição Widi Care de brinde. Validade: 5 semanas, depois não pode mais ser usado.'},
   {id:'pk_sem_2', label:'Cronograma tratamento sem escova — Longo', cat:'Pacotes de tratamento', prices:[265], estimatedMin:60, desc:'3 tratamentos (Wella / L\'Oréal / Redken) + 1 nutrição Widi Care de brinde. Validade: 5 semanas, depois não pode mais ser usado.'},
@@ -102,11 +105,19 @@ const SERVICES = [
   {id:'design',       label:'Design de sobrancelhas',      cat:'Sobrancelhas e cílios', prices:[37], estimatedMin:40},
   {id:'bucco',        label:'Buço',                        cat:'Sobrancelhas e cílios', prices:[17], estimatedMin:15},
   {id:'lamination',   label:'Brow lamination',             cat:'Sobrancelhas e cílios', prices:[100], estimatedMin:60},
-  {id:'lash',         label:'Lash lifting',                cat:'Sobrancelhas e cílios', prices:[120], estimatedMin:70},
+  {id:'lash',         label:'Lash lifting',                cat:'Sobrancelhas e cílios', prices:[100], estimatedMin:70},
   {id:'colorsobr',    label:'Coloração de sobrancelhas',   cat:'Sobrancelhas e cílios', prices:[32], estimatedMin:20},
   {id:'henna',        label:'Henna',                       cat:'Sobrancelhas e cílios', prices:[27], estimatedMin:20},
   {id:'outro',        label:'Outro serviço',                cat:'Outro', prices:[], estimatedMin:60},
 ];
+const TABELA_DEZ_2026 = {mecha_morena:[500], mecha_loira:[600], escova:[65], corte:[65], coloracao_raiz:[130], portier:[200], botox:[200], aplic_coloracao:[55],
+  trat_wella:[80], trat_kerastase:[120], trat_escova_wella:[140], trat_escova_kerastase:[210], design:[37], henna:[27], colorsobr:[32], lamination:[100], lash:[100], bucco:[17]};
+function migrarTabelaDez2026(cfg){
+  if(!cfg || cfg.tabelaDez2026) return false;
+  const ed = Object.assign({}, cfg.servicosEdit||{});
+  Object.keys(TABELA_DEZ_2026).forEach(id=>{ ed[id] = Object.assign({}, ed[id]||{}, {prices:TABELA_DEZ_2026[id]}); });
+  cfg.servicosEdit = ed; cfg.tabelaDez2026 = true; return true;
+}
 function studioPctFor(id){ const sv=(typeof serviceById==='function')?serviceById(id):null; return (sv && sv.studioPct>0) ? sv.studioPct : (config.comissaoProfissionalPercent||0); }
 function proFaz(sv){ return true; } // por enquanto a Andressa escolhe qualquer servico (pacotes ficam so com a dona)
 const SERVICES_BASE = SERVICES.map(x=>JSON.parse(JSON.stringify(x)));
@@ -284,7 +295,7 @@ function startListeners(role){
     listen('custos', col('custos'), snap=>{ custos = mapDocs(snap); });
     listen('config', db.doc('config/geral'), snap=>{
       const data = snap && typeof snap.data === 'function' ? snap.data() : null;
-      if(data) config = Object.assign({}, DEFAULT_CONFIG, data);
+      if(data){ config = Object.assign({}, DEFAULT_CONFIG, data); if(migrarTabelaDez2026(config) && !usingLocal){ db.doc('config/geral').set(config).catch(()=>{}); } }
     });
     if(AUTH_MODE) listen('acesso', col('acesso'), snap=>{ acessos = mapDocs(snap); });
   }
