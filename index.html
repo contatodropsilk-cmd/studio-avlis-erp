@@ -138,6 +138,7 @@ function applyServiceConfig(){
 const COST_CHIPS = [0,10,20,30,50,70,100,150];
 const DEFAULT_CONFIG = {
   custosFixos:1494.55, custosFixosItens:[{label:'Aluguel',valor:881},{label:'Água (média)',valor:173.45},{label:'IPTU',valor:52.10},{label:'Internet',valor:110},{label:'Luz (média)',valor:190},{label:'DAS-MEI',valor:88}], metaMin:4000, metaMax:5000, retiradaMin:2000, retiradaMax:3000,
+  reactivationTemplateServ: 'Oi {nome}! Tudo bem? Faz um tempinho que a gente não se vê por aqui no Studio Avlis 💕 Que tal marcar o seu {servico}? Tenho horários essa semana e posso reservar um pra você.',
   reactivationTemplate: 'Oi {nome}! Tudo bem? Faz tempo que a gente não se vê por aqui no Studio Avlis 💕 Separei um horário especial pra você — quer agendar um retoque?',
   reminderTemplate: 'Oi {nome}! Passando pra lembrar do seu horário amanhã às {hora} ({servico}) aqui no Studio Avlis 💕 Te espero!',
   pontosPorReal: 10,
@@ -799,6 +800,30 @@ function daysSince(ts){ return Math.floor((Date.now()-ts)/86400000); }
 function monthKey(ts){ const d=new Date(ts); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'); }
 function monthLabel(key){ const [y,m]=key.split('-'); const names=['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez']; return names[parseInt(m)-1]+'/'+y; }
 function currentMonthKeyFromOffset(){ const d=new Date(); d.setDate(1); d.setMonth(d.getMonth()+state.financeMonthOffset); return monthKey(d.getTime()); }
+function _norm(s){ return (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim(); }
+function servicosDoRegistro(r){
+  const out=[];
+  if(r.servicos&&r.servicos.length){ r.servicos.forEach(x=>{ if(x&&x.label) out.push(x.label); }); }
+  else if(r.serviceLabel){ String(r.serviceLabel).split(/\s*\+\s*/).forEach(x=>{ x=x.trim(); if(x) out.push(x); }); }
+  if(!out.length && r.note){ String(r.note).split('\n').forEach(ln=>{ const m=ln.match(/^\s*([^\d\n]*?)\s*(\d+(?:[.,]\d{1,2})?)\s*$/); if(m&&m[1].trim()) out.push(m[1].trim()); }); }
+  return out;
+}
+function clienteHistorico(c){
+  const key=_norm(c.name); const cnt={}; let visitas=0;
+  records.forEach(r=>{
+    if(r.clientId===c.id || (r.clientName && _norm(r.clientName)===key)){
+      visitas++;
+      servicosDoRegistro(r).forEach(sv=>{ const k=_norm(sv); if(!k) return; cnt[k]=cnt[k]||{label:sv,n:0}; cnt[k].n++; });
+    }
+  });
+  const top=Object.values(cnt).sort((a,b)=>b.n-a.n)[0]||null;
+  return {visitas, favorito: top?top.label.trim():null, vezes: top?top.n:0};
+}
+function reativaMsg(c,h){
+  const nome=(c.name||'').trim().split(' ')[0];
+  if(h && h.favorito){ return (config.reactivationTemplateServ||DEFAULT_CONFIG.reactivationTemplateServ).replace('{nome}',nome).replace('{servico}',h.favorito.toLowerCase()); }
+  return config.reactivationTemplate.replace('{nome}',nome);
+}
 function waLink(whatsapp, text){
   const digits=(whatsapp||'').replace(/\D/g,''); if(!digits) return null;
   const num = digits.length<=11 ? '55'+digits : digits;
@@ -3545,31 +3570,50 @@ function renderMarketing(){
   tplBox1.onchange = (e)=>saveConfig({reactivationTemplate:e.target.value});
   wrap.appendChild(tplBox1);
   wrap.appendChild(el('p','text-xs opacity-40 mb-2','Use {nome} no texto — é trocado pelo nome da cliente.'));
+  wrap.appendChild(el('p','text-xs opacity-60 mb-1','Mensagem quando o app sabe o serviço que ela mais faz'));
+  const tplBoxS = el('textarea','w-full rounded-lg px-2 py-2 text-xs mb-2');
+  tplBoxS.style.border='1px solid var(--rose-light)'; tplBoxS.rows=3;
+  tplBoxS.value = config.reactivationTemplateServ || DEFAULT_CONFIG.reactivationTemplateServ;
+  tplBoxS.onchange = (e)=>saveConfig({reactivationTemplateServ:e.target.value});
+  wrap.appendChild(tplBoxS);
+  wrap.appendChild(el('p','text-xs opacity-40 mb-2','Use {nome} e {servico} — o serviço que ela mais fez.'));
+  const fchips = el('div','flex gap-2 mb-3');
+  [['todas','Todas'],['fieis','Só as fiéis (3+ visitas)']].forEach(([v,l])=>{
+    const ch=el('button','tap chip px-3 py-2 rounded-full bg-white text-xs shadow-sm',l); ch.style.border='1px solid var(--hairline)';
+    if((state.reativaFiltro||'todas')===v) ch.classList.add('active');
+    ch.onclick=()=>{ state.reativaFiltro=v; render(); };
+    fchips.appendChild(ch);
+  });
+  wrap.appendChild(fchips);
 
-  const overdue = clients.filter(c=>c.lastServiceAt && daysSince(c.lastServiceAt)>45)
-    .sort((a,b)=>daysSince(b.lastServiceAt)-daysSince(a.lastServiceAt));
+  const hist = {}; clients.forEach(c=>{ hist[c.id]=clienteHistorico(c); });
+  let overdue = clients.filter(c=>c.lastServiceAt && daysSince(c.lastServiceAt)>45);
+  if(state.reativaFiltro==='fieis') overdue = overdue.filter(c=>hist[c.id].visitas>=3).sort((a,b)=>hist[b.id].visitas-hist[a.id].visitas);
+  else overdue = overdue.sort((a,b)=>daysSince(b.lastServiceAt)-daysSince(a.lastServiceAt));
   if(!overdue.length){
     wrap.appendChild(el('p','text-sm opacity-60 mb-4','Nenhuma cliente atrasada no momento.'));
   } else {
     const list = el('div','space-y-2 mb-4');
     overdue.forEach(c=>{
-      const msg = config.reactivationTemplate.replace('{nome}', c.name);
+      const h = hist[c.id]; const msg = reativaMsg(c,h);
       const link = waLink(c.whatsapp, msg);
       const row = el('div','rounded-xl px-3 py-2 bg-white shadow-sm');
       row.style.border='1px solid var(--amber-border)';
       const top = el('div','flex items-center justify-between mb-1');
-      top.innerHTML = `<div><p class="font-medium text-sm">${c.name}</p><p class="text-xs opacity-60">${daysSince(c.lastServiceAt)} dias sem vir</p></div>`;
+      top.innerHTML = `<div><p class="font-medium text-sm">${c.name}</p><p class="text-xs opacity-60">${daysSince(c.lastServiceAt)} dias sem vir · ${h.visitas} visita(s)${h.favorito?' · costuma fazer '+h.favorito+' ('+h.vezes+'x)':''}</p></div>`;
       row.appendChild(top);
       const preview = el('p','text-xs opacity-70 mb-2 p-2 rounded-lg', msg);
       preview.style.background='var(--cream)'; preview.style.whiteSpace='pre-wrap';
       row.appendChild(preview);
-      const btnRow = el('div','flex gap-2');
+      const btnRow = el('div','flex gap-2 flex-wrap');
       if(link){
         const a = el('a','tap text-xs px-3 py-2 rounded-lg text-white','Enviar no WhatsApp');
         a.href=link; a.target='_blank'; a.style.background='var(--rose)';
         btnRow.appendChild(a);
       } else {
-        btnRow.appendChild(el('span','text-xs opacity-40 px-1 py-2','sem WhatsApp cadastrado'));
+        const wi=el('input','rounded-lg px-2 py-2 text-xs'); wi.type='tel'; wi.placeholder='WhatsApp (com DDD)'; wi.style.border='1px solid var(--rose-light)'; wi.style.width='170px';
+        wi.onchange=(e)=>setClientField(c.id,'whatsapp',e.target.value);
+        btnRow.appendChild(wi);
       }
       btnRow.appendChild(copyButton(msg));
       row.appendChild(btnRow);
