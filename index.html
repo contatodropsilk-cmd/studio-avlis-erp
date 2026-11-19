@@ -112,6 +112,7 @@ function proFaz(sv){ return state.role!=='pro' || (sv.proPay>0); }
 const SERVICES_BASE = SERVICES.map(x=>JSON.parse(JSON.stringify(x)));
 let __svcCfgKey = '';
 function applyServiceConfig(){
+  if(!config.nomeProfissional || config.nomeProfissional==='Profissional') config.nomeProfissional='Andressa';
   const ed = (typeof config!=='undefined' && config.servicosEdit) || {};
   const nv = (typeof config!=='undefined' && config.servicosNovos) || [];
   const key = JSON.stringify([ed,nv]);
@@ -143,7 +144,7 @@ const DEFAULT_CONFIG = {
   birthdayTemplate: 'Feliz aniversário, {nome}! 🎉 Que seu dia seja lindo! Separei um carinho especial pra quando você vier fazer {servico_favorito} aqui no Studio Avlis.',
   routineTemplate: 'Oi {nome}! Já faz {dias} dias desde seu(sua) {servico} — bora agendar o próximo pra manter tudo em dia? Me fala o melhor horário pra você 💕',
   rotinaAvisoDias: 5,
-  nomeProfissional: 'Profissional', comissaoProfissionalPercent: 30,
+  nomeProfissional: 'Andressa', comissaoProfissionalPercent: 30,
   donaPin: '0810',
   lastBackupAt: 0,
   servicosEdit: {},
@@ -3433,7 +3434,7 @@ function renderOcupacao(){
     mb.appendChild(el('p','text-xs font-semibold mb-2','Motivos dos atrasos'));
     Object.entries(cont).sort((a,b)=>b[1].n-a[1].n).forEach(([m,v])=>{ const w=Math.max(4,Math.round(v.n/atr.length*100)); const l=el('div','mb-2'); l.innerHTML=`<div class="flex justify-between text-xs"><span>${m.replace(/</g,'&lt;')}</span><b>${v.n}x · ${v.min} min</b></div><div style="height:5px;border-radius:5px;background:var(--rose-light);margin-top:3px"><div style="height:5px;border-radius:5px;background:var(--rose);width:${w}%"></div></div>`; mb.appendChild(l); });
     wrap.appendChild(mb);
-    const por={}; rs.forEach(r=>{ const k=r.performedBy==='pro'?config.nomeProfissional:'Dona'; por[k]=por[k]||{t:0,a:0,m:0}; por[k].t++; if(r.atrasoMin>=ATRASO_LIM){ por[k].a++; por[k].m+=r.atrasoMin; } });
+    const por={}; rs.forEach(r=>{ const k=r.performedBy==='pro'?config.nomeProfissional:'Jennifer'; por[k]=por[k]||{t:0,a:0,m:0}; por[k].t++; if(r.atrasoMin>=ATRASO_LIM){ por[k].a++; por[k].m+=r.atrasoMin; } });
     const pb=el('div','rounded-xl p-3 mb-3 bg-white shadow-sm text-xs'); pb.style.border='1px solid var(--hairline)';
     pb.appendChild(el('p','font-semibold mb-2','Quem atende'));
     Object.entries(por).forEach(([k,v])=>{ const l=el('div','flex justify-between mb-1'); l.innerHTML=`<span>${k}</span><span>${v.a} de ${v.t} atrasados${v.a?' · média '+Math.round(v.m/v.a)+' min':''}</span>`; pb.appendChild(l); });
