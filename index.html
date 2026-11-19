@@ -672,7 +672,7 @@ function confirmarVenda(){
 }
 function renderVendaPacote(){
   const v=state.venda; const wrap=el('div');
-  wrap.appendChild(backButton(()=>{ state.venda=null; state.screen='pick'; render(); }));
+  wrap.appendChild(backButton(()=>{ state.venda=null; state.screen='pick-service'; render(); }));
   wrap.appendChild(el('h2','text-xl font-bold mb-1','Vender pacote'));
   wrap.appendChild(el('p','text-sm font-medium mb-1',v.svc.label));
   if(v.svc.desc) wrap.appendChild(el('p','text-xs opacity-60 mb-4',v.svc.desc));
