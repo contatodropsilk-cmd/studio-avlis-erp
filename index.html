@@ -2030,7 +2030,17 @@ function renderServicos(){
   wrap.appendChild(el('p','text-xs opacity-60 mb-4','Ajuste os valores que você pratica hoje. Em “Valores”, separe por espaço (ex.: 80 100 120.50 ou 37,50). O primeiro é o sugerido ao finalizar; os outros viram botões rápidos. Só vale para atendimentos novos.'));
   const inputStyle='width:100%;padding:8px 10px;border-radius:10px;border:1px solid var(--rose-light);font-size:15px;background:#fff';
   const field=(label,id,val,type,ph)=>{
-    const d=el('div','mb-2'); d.appendChild(el('p','text-xs opacity-60 mb-1',label));
+    const d=el('div','mb-2');
+    const isPrices = /prices-|sv-new-prices/.test(id);
+    if(isPrices){
+      const head=el('div','flex items-center justify-between mb-1'); head.appendChild(el('p','text-xs opacity-60',label));
+      const tg=el('button','tap text-xs underline opacity-80','teclado: 123'); tg.type='button'; head.appendChild(tg); d.appendChild(head);
+      const i=el('input'); i.id=id; i.value=val; i.style.cssText=inputStyle; i.type='text'; i.inputMode='text'; if(ph) i.placeholder=ph;
+      let num=false;
+      tg.onclick=(e)=>{ e.preventDefault(); num=!num; i.inputMode=num?'decimal':'text'; tg.textContent=num?'teclado: ABC (com espaço)':'teclado: 123'; i.blur(); setTimeout(()=>i.focus(),60); };
+      d.appendChild(i); return d;
+    }
+    d.appendChild(el('p','text-xs opacity-60 mb-1',label));
     const i=el('input'); i.id=id; i.value=val; i.style.cssText=inputStyle; if(type==='num'){ i.type='text'; i.inputMode='decimal'; } if(ph) i.placeholder=ph;
     d.appendChild(i); return d;
   };
