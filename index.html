@@ -108,7 +108,7 @@ const SERVICES = [
   {id:'outro',        label:'Outro serviço',                cat:'Outro', prices:[], estimatedMin:60},
 ];
 function studioPctFor(id){ const sv=(typeof serviceById==='function')?serviceById(id):null; return (sv && sv.studioPct>0) ? sv.studioPct : (config.comissaoProfissionalPercent||0); }
-function proFaz(sv){ return state.role!=='pro' || (sv.proPay>0); }
+function proFaz(sv){ return true; } // por enquanto a Andressa escolhe qualquer servico (pacotes ficam so com a dona)
 const SERVICES_BASE = SERVICES.map(x=>JSON.parse(JSON.stringify(x)));
 let __svcCfgKey = '';
 function applyServiceConfig(){
