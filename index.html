@@ -580,6 +580,44 @@ function computeEstoqueAlerts(){
   });
   return alerts;
 }
+
+// ---------- limite de faturamento do MEI ----------
+function meiLimite(y){ return y<=2026 ? 81000 : (y===2027 ? 110000 : 140000); }
+function meiResumo(){
+  const hoje=new Date(); const y=hoje.getFullYear(); const m=hoje.getMonth();
+  const meses=Array(12).fill(0);
+  records.forEach(r=>{ const d=new Date(r.startedAt||r.createdAt||0); if(d.getFullYear()===y) meses[d.getMonth()]+=(r.price||0); });
+  const ytd=meses.reduce((a,b)=>a+b,0); const limite=meiLimite(y); const pct=limite>0?ytd/limite*100:0;
+  const decorridos=m+1; const media=ytd/decorridos; const restantes=12-decorridos;
+  const projecao=ytd+media*restantes;
+  const faltam=Math.max(0,limite-ytd); const porMes=faltam/Math.max(1,12-m);
+  let nivel='ok';
+  if(pct>=100) nivel='estourou'; else if(pct>=90) nivel='critico'; else if(pct>=80 || (m>=2 && projecao>limite)) nivel='atencao';
+  return {y,m,meses,ytd,limite,pct,media,projecao,faltam,porMes,nivel};
+}
+function meiMensagem(r){
+  if(r.nivel==='estourou') return 'O faturamento de '+r.y+' passou do limite do MEI. Fale com o contador agora: passar do teto muda o enquadramento e pode gerar imposto a mais.';
+  if(r.nivel==='critico') return 'Faltam só '+fmtMoney(r.faltam)+' para o limite do MEI. Vale falar com o contador antes de continuar faturando.';
+  if(r.nivel==='atencao') return r.pct>=80 ? 'Já usou '+Math.round(r.pct)+'% do limite do MEI. Faltam '+fmtMoney(r.faltam)+' (cerca de '+fmtMoney(r.porMes)+' por mês até dezembro).' : 'No ritmo atual o ano fecha perto de '+fmtMoney(r.projecao)+', acima do limite de '+fmtMoney(r.limite)+'. Acompanhe de perto.';
+  return 'Dentro do limite. Pode faturar cerca de '+fmtMoney(r.porMes)+' por mês até dezembro.';
+}
+const MEI_COR={ok:'var(--green)',atencao:'var(--amber)',critico:'var(--danger)',estourou:'var(--danger)'};
+function renderMeiCard(){
+  const r=meiResumo();
+  const card=el('div','rounded-2xl p-4 mb-4 shadow-sm'); card.style.background='white'; card.style.border='1px solid '+(r.nivel==='ok'?'var(--rose-light)':MEI_COR[r.nivel]);
+  card.appendChild(el('p','text-xs uppercase tracking-wide opacity-60 mb-2','Limite do MEI em '+r.y));
+  const top=el('p','text-2xl font-bold mb-1'); top.style.color=MEI_COR[r.nivel]; top.textContent=fmtMoney(r.ytd)+' de '+fmtMoney(r.limite); card.appendChild(top);
+  const bar=el('div'); bar.style.cssText='height:10px;border-radius:10px;background:var(--rose-light);margin:8px 0;overflow:hidden';
+  const fill=el('div'); fill.style.cssText='height:10px;border-radius:10px;width:'+Math.min(100,Math.round(r.pct))+'%;background:'+MEI_COR[r.nivel]; bar.appendChild(fill); card.appendChild(bar);
+  card.appendChild(el('p','text-sm mb-2',Math.round(r.pct)+'% do limite usado · média de '+fmtMoney(r.media)+' por mês · projeção do ano: '+fmtMoney(r.projecao)));
+  const msg=el('p','text-sm rounded-lg px-2 py-2 mb-3',meiMensagem(r)); msg.style.background=r.nivel==='ok'?'var(--cream)':'var(--amber-light)'; card.appendChild(msg);
+  const nomes=['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez']; const mx=Math.max(...r.meses,r.limite/12,1);
+  const g=el('div','flex items-end gap-1'); g.style.height='92px';
+  r.meses.forEach((v,i)=>{ const c=el('div','flex-1 text-center'); c.style.fontSize='10px'; const fut=i>r.m; c.innerHTML=`<div style="height:${Math.round(v/mx*60)+2}px;background:${fut?'var(--rose-light)':'var(--rose)'};border-radius:3px 3px 0 0;margin-bottom:2px"></div>${nomes[i]}<br><b>${v>=1000?(v/1000).toFixed(1).replace('.',','):Math.round(v)}${v>=1000?'k':''}</b>`; g.appendChild(c); });
+  card.appendChild(g);
+  card.appendChild(el('p','text-xs opacity-50 mt-2','Soma tudo que foi lançado no ano (atendimentos e venda de pacotes). Teto de 2027: R$ 110 mil e de 2028: R$ 140 mil (LC 238/2026). Confirme sempre com o contador.'));
+  return card;
+}
 function custosFixosTotal(){ const it=config.custosFixosItens; if(Array.isArray(it) && it.length) return Math.round(it.reduce((a,x)=>a+(+x.valor||0),0)*100)/100; return config.custosFixos||0; }
 function saveConfig(patch){
   config = Object.assign({}, config, patch);
@@ -1696,9 +1734,11 @@ function renderHome(){
   const routineAlerts = computeRoutineAlerts();
   const estoqueAlerts = computeEstoqueAlerts();
   const pacoteAlerts = computePacoteAlerts();
-  if(birthdayAlerts.length || routineAlerts.length || estoqueAlerts.length || pacoteAlerts.length){
+  const meiR = state.role!=='pro' ? meiResumo() : null; const meiAl = !!(meiR && meiR.nivel!=='ok');
+  if(birthdayAlerts.length || routineAlerts.length || estoqueAlerts.length || pacoteAlerts.length || meiAl){
     wrap.appendChild(el('p','text-sm font-semibold mb-2', iconLabel('star','Avisos de hoje','var(--amber)')));
     const alertList = el('div','space-y-2 mb-5');
+    if(meiAl){ const b=el('button','tap w-full text-left rounded-xl px-3 py-3 text-sm'); b.style.cssText='background:var(--amber-light);border:1px solid '+MEI_COR[meiR.nivel]; b.innerHTML='<b>Limite do MEI:</b> '+meiMensagem(meiR).replace(/</g,'&lt;'); b.onclick=()=>{ state.screen='finance'; render(); }; alertList.appendChild(b); }
     birthdayAlerts.forEach(c=>{
       const msg = config.birthdayTemplate.replace('{nome}',c.name).replace('{servico_favorito}', clientFavoriteService(c.id));
       alertList.appendChild(renderAlertCard(`🎂 Aniversário de ${c.name}`, msg, c.whatsapp, null));
@@ -2330,6 +2370,7 @@ function renderFinance(){
     : `Meta mínima batida — ${fmtMoney(t.fat-config.metaMin)} acima de ${fmtMoney(config.metaMin)}`;
   card1.appendChild(el('p','text-xs opacity-60 mt-2', metaMsg));
   wrap.appendChild(card1);
+  wrap.appendChild(renderMeiCard());
 
   const card2=el('div','rounded-2xl p-4 mb-4 shadow-sm'); card2.style.background='white'; card2.style.border='1px solid var(--rose-light)';
   card2.appendChild(el('p','text-xs uppercase tracking-wide opacity-60 mb-2','Custos do mês'));
