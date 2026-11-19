@@ -78,10 +78,26 @@ const SERVICES = [
   {id:'coloracao_raiz',label:'Coloração de raiz',          cat:'Cabelo', prices:[130], defaultPartner:52, studioPct:35, estimatedMin:90},
   {id:'corte',        label:'Corte',                       cat:'Cabelo', prices:[65], defaultPartner:29.25, studioPct:25, estimatedMin:45},
   {id:'tratamento',   label:'Tratamento',                  cat:'Cabelo', prices:[75,100,150,200], estimatedMin:60},
-  {id:'trat_wella',   label:'Tratamento Wella / L\'Oréal / Redken', cat:'Cabelo', prices:[80], defaultPartner:36, studioPct:35, estimatedMin:60},
-  {id:'trat_kerastase',label:'Tratamento Kérastase',       cat:'Cabelo', prices:[120], defaultPartner:54, studioPct:35, estimatedMin:60},
-  {id:'trat_escova_wella',label:'Tratamento + Escova Wella / L\'Oréal / Redken', cat:'Cabelo', prices:[140], defaultPartner:56, studioPct:35, estimatedMin:90},
-  {id:'trat_escova_kerastase',label:'Tratamento + Escova Kérastase', cat:'Cabelo', prices:[210], defaultPartner:84, studioPct:35, estimatedMin:90},
+  {id:'trat_wella',   label:'Tratamento Wella / L\'Oréal / Redken', cat:'Cabelo', prices:[75,80], defaultPartner:36, studioPct:35, estimatedMin:60},
+  {id:'trat_kerastase',label:'Tratamento Kérastase',       cat:'Cabelo', prices:[115,120], defaultPartner:54, studioPct:35, estimatedMin:60},
+  {id:'trat_escova_wella',label:'Tratamento + Escova Wella / L\'Oréal / Redken', cat:'Cabelo', prices:[130,140], defaultPartner:56, studioPct:35, estimatedMin:90},
+  {id:'trat_escova_kerastase',label:'Tratamento + Escova Kérastase', cat:'Cabelo', prices:[199,210], defaultPartner:84, studioPct:35, estimatedMin:90},
+  {id:'pk_sem_0', label:'Cronograma tratamento sem escova — Curto', cat:'Pacotes de tratamento', prices:[225], estimatedMin:60, desc:'3 tratamentos (Wella / L\'Oréal / Redken) + 1 nutrição Widi Care de brinde. Validade: 5 semanas, depois não pode mais ser usado.'},
+  {id:'pk_sem_1', label:'Cronograma tratamento sem escova — Médio', cat:'Pacotes de tratamento', prices:[245], estimatedMin:60, desc:'3 tratamentos (Wella / L\'Oréal / Redken) + 1 nutrição Widi Care de brinde. Validade: 5 semanas, depois não pode mais ser usado.'},
+  {id:'pk_sem_2', label:'Cronograma tratamento sem escova — Longo', cat:'Pacotes de tratamento', prices:[265], estimatedMin:60, desc:'3 tratamentos (Wella / L\'Oréal / Redken) + 1 nutrição Widi Care de brinde. Validade: 5 semanas, depois não pode mais ser usado.'},
+  {id:'pk_sem_3', label:'Cronograma tratamento sem escova — Extra longo', cat:'Pacotes de tratamento', prices:[285], estimatedMin:60, desc:'3 tratamentos (Wella / L\'Oréal / Redken) + 1 nutrição Widi Care de brinde. Validade: 5 semanas, depois não pode mais ser usado.'},
+  {id:'pk_com_0', label:'Cronograma tratamento com escova — Curto', cat:'Pacotes de tratamento', prices:[300], estimatedMin:90, desc:'3 tratamentos com escova (Wella / L\'Oréal / Redken) + 1 nutrição Widi Care de brinde. Validade: 5 semanas, depois não pode mais ser usado.'},
+  {id:'pk_com_1', label:'Cronograma tratamento com escova — Médio', cat:'Pacotes de tratamento', prices:[330], estimatedMin:90, desc:'3 tratamentos com escova (Wella / L\'Oréal / Redken) + 1 nutrição Widi Care de brinde. Validade: 5 semanas, depois não pode mais ser usado.'},
+  {id:'pk_com_2', label:'Cronograma tratamento com escova — Longo', cat:'Pacotes de tratamento', prices:[360], estimatedMin:90, desc:'3 tratamentos com escova (Wella / L\'Oréal / Redken) + 1 nutrição Widi Care de brinde. Validade: 5 semanas, depois não pode mais ser usado.'},
+  {id:'pk_com_3', label:'Cronograma tratamento com escova — Extra longo', cat:'Pacotes de tratamento', prices:[390], estimatedMin:90, desc:'3 tratamentos com escova (Wella / L\'Oréal / Redken) + 1 nutrição Widi Care de brinde. Validade: 5 semanas, depois não pode mais ser usado.'},
+  {id:'pk_ksem_0', label:'Cronograma tratamento sem escova Kérastase — Curto', cat:'Pacotes de tratamento', prices:[345], estimatedMin:60, desc:'3 tratamentos Kérastase + 1 tratamento Wella de brinde. Validade: 5 semanas, depois não pode mais ser usado.'},
+  {id:'pk_ksem_1', label:'Cronograma tratamento sem escova Kérastase — Médio', cat:'Pacotes de tratamento', prices:[365], estimatedMin:60, desc:'3 tratamentos Kérastase + 1 tratamento Wella de brinde. Validade: 5 semanas, depois não pode mais ser usado.'},
+  {id:'pk_ksem_2', label:'Cronograma tratamento sem escova Kérastase — Longo', cat:'Pacotes de tratamento', prices:[385], estimatedMin:60, desc:'3 tratamentos Kérastase + 1 tratamento Wella de brinde. Validade: 5 semanas, depois não pode mais ser usado.'},
+  {id:'pk_ksem_3', label:'Cronograma tratamento sem escova Kérastase — Extra longo', cat:'Pacotes de tratamento', prices:[405], estimatedMin:60, desc:'3 tratamentos Kérastase + 1 tratamento Wella de brinde. Validade: 5 semanas, depois não pode mais ser usado.'},
+  {id:'pk_kcom_0', label:'Cronograma tratamento com escova Kérastase — Curto', cat:'Pacotes de tratamento', prices:[597], estimatedMin:90, desc:'3 tratamentos Kérastase com escova + 1 tratamento Wella de brinde. Validade: 5 semanas, depois não pode mais ser usado.'},
+  {id:'pk_kcom_1', label:'Cronograma tratamento com escova Kérastase — Médio', cat:'Pacotes de tratamento', prices:[627], estimatedMin:90, desc:'3 tratamentos Kérastase com escova + 1 tratamento Wella de brinde. Validade: 5 semanas, depois não pode mais ser usado.'},
+  {id:'pk_kcom_2', label:'Cronograma tratamento com escova Kérastase — Longo', cat:'Pacotes de tratamento', prices:[657], estimatedMin:90, desc:'3 tratamentos Kérastase com escova + 1 tratamento Wella de brinde. Validade: 5 semanas, depois não pode mais ser usado.'},
+  {id:'pk_kcom_3', label:'Cronograma tratamento com escova Kérastase — Extra longo', cat:'Pacotes de tratamento', prices:[687], estimatedMin:90, desc:'3 tratamentos Kérastase com escova + 1 tratamento Wella de brinde. Validade: 5 semanas, depois não pode mais ser usado.'},
   {id:'progressiva',  label:'Progressiva/alisamento (parceira)', cat:'Cabelo', prices:[], commissionType:'percent40', estimatedMin:240},
   {id:'design',       label:'Design de sobrancelhas',      cat:'Sobrancelhas e cílios', prices:[37], estimatedMin:40},
   {id:'bucco',        label:'Buço',                        cat:'Sobrancelhas e cílios', prices:[17], estimatedMin:15},
@@ -1452,6 +1468,7 @@ function renderTimer(){
     svcRow.appendChild(c);
   });
   wrap.appendChild(svcRow);
+  { const dsv=timerServicesInfo().map(x=>x.svc).filter(v=>v.desc); dsv.forEach(v=>{ const dp=el('p','text-xs opacity-70 mt-2 px-2',''); dp.textContent=v.label+': '+v.desc; wrap.appendChild(dp); }); }
   const addSvcBtn=el('button','tap text-xs underline opacity-70 mt-2', state.timer.showAddSvc ? 'fechar' : '+ outro serviço neste atendimento'); addSvcBtn.onclick=toggleAddSvc; wrap.appendChild(addSvcBtn);
   if(state.timer.showAddSvc){
     const g=el('div','grid grid-cols-2 gap-1 mt-2 text-left');
