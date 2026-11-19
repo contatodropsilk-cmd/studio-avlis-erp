@@ -1,4 +1,4 @@
-const CACHE_NAME = 'studio-avlis-v18';
+const CACHE_NAME = 'studio-avlis-v19';
 const SHELL = ['/', '/index.html', '/manifest.json', '/icons/icon-192.png', '/icons/icon-512.png'];
 
 self.addEventListener('install', (event) => {

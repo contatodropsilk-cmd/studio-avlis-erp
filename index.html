@@ -152,6 +152,9 @@ const DEFAULT_CONFIG = {
   whatsappProfissional: '',
   cobrarInsumosClientesDela: true,
   lembreteDiaTemplate: 'Oi {nome}! Passando pra lembrar do seu horário {dia} às {hora} ({servico}) aqui no Studio Avlis 💕 Me confirma?',
+  reagendaTemplate: 'Oi {nome}! Precisei remarcar o seu horário aqui no Studio Avlis. Ficou assim: {dia} às {hora} ({servico}). Tudo bem pra você? 💕',
+  reagendaClienteTemplate: 'Oi {nome}! Remarcado como você pediu: {dia} às {hora} ({servico}) aqui no Studio Avlis 💕 Até lá!',
+  expediente: { dias:[1,2,3,4,5,6], ini:'09:00', fim:'19:00' },
 };
 const PAYMENT_METHODS = ['Dinheiro','Cartão débito','Cartão crédito','Pix','Outro'];
 
@@ -932,7 +935,7 @@ function timerElapsed(){ let ms=state.timer.accumulated; if(state.timer.status==
 function startTick(){ stopTick(); state.tickHandle=setInterval(()=>{ const e=document.getElementById('timer-display'); if(e) e.textContent=fmtClock(timerElapsed()); },500); }
 function stopTick(){ if(state.tickHandle){ clearInterval(state.tickHandle); state.tickHandle=null; } }
 
-function freshTimer(){ return {svcIds:[],activeSvc:null,svcMs:{},segStart:0,showAddSvc:false,status:'idle',startedAt:null,accumulated:0,stockUsage:[],insumoSelectedId:null,insumoQty:'',showInsumoForm:false,proOwnClient:false,proPrice:'',proClientName:'',proPriceError:false}; }
+function freshTimer(){ return {svcIds:[],activeSvc:null,svcMs:{},segStart:0,showAddSvc:false,status:'idle',startedAt:null,accumulated:0,stockUsage:[],insumoSelectedId:null,insumoQty:'',showInsumoForm:false,proOwnClient:false,proPrice:'',proClientName:'',proPriceError:false,inicioReal:null,atrasoMin:0,atrasoMotivo:'',atrasoObs:'',horaManual:'',showHoraManual:false,ignorarAtraso:false}; }
 function pickService(svc, allIds){
   if(svc.cat===PACOTE_CAT){ if(state.role==='pro'){ showToast('Pacotes são vendidos pela dona.'); return; } startVenda(svc); return; }
   state.service=svc; state.timer=freshTimer();
@@ -973,6 +976,7 @@ function addInsumoDuringService(){
 }
 function removeInsumoDuringService(i){ state.timer.stockUsage.splice(i,1); render(); }
 function finishTimerPro(){
+  if(atrasoPendente()){ showToast('Informe o motivo do atraso antes de finalizar.'); return; }
   closeSegment();
   stopTick();
   const accumulated = timerElapsed();
@@ -995,6 +999,7 @@ function finishTimerPro(){
     productCost, partnerCost: proOwnClient ? 0 : proTabelaPaga, stockUsage, performedBy:'pro', note:'',
     createdAt: Date.now(),
   };
+  Object.assign(rec, atrasoRecordFields());
   stockUsage.forEach(u=>registrarUsoEstoque(u.estoqueItemId, u.qty));
   saveRecord(rec, ()=>{
     state.service=null;
@@ -1003,10 +1008,16 @@ function finishTimerPro(){
     savedToast('Atendimento salvo');
   });
 }
-function startTimer(){ state.timer.status='running'; state.timer.startedAt=Date.now(); state.timer.segStart=timerElapsed(); startTick(); render(); }
+function startTimer(){
+  const t=state.timer;
+  if(!t.inicioReal){ t.inicioReal=Date.now(); const prev=previstoTs(); t.atrasoMin = (prev && !t.ignorarAtraso) ? Math.max(0,Math.round((t.inicioReal-prev)/60000)) : 0; }
+  if(state.atrasoHandle){ clearInterval(state.atrasoHandle); state.atrasoHandle=null; }
+  t.status='running'; t.startedAt=Date.now(); t.segStart=timerElapsed(); startTick(); render();
+}
 function pauseTimer(){ closeSegment(); state.timer.accumulated=timerElapsed(); state.timer.status='paused'; state.timer.startedAt=null; stopTick(); render(); }
 function resumeTimer(){ state.timer.status='running'; state.timer.startedAt=Date.now(); state.timer.segStart=timerElapsed(); startTick(); render(); }
 function finishTimer(){
+  if(atrasoPendente()){ showToast('Informe o motivo do atraso antes de finalizar.'); return; }
   closeSegment();
   state.timer.accumulated=timerElapsed(); state.timer.status='stopped'; stopTick();
   const svc = serviceById(state.timer.svcIds[0]) || state.service;
@@ -1118,6 +1129,7 @@ function confirmSave(){
     note:(document.getElementById('note-input')&&document.getElementById('note-input').value)||'',
     createdAt:Date.now(),
   };
+  Object.assign(rec, atrasoRecordFields());
   if(pkUse){ rec.pacoteId=pkUse.id; rec.pacoteSessao=(pkUse.usos||[]).length+1; rec.pacoteRateio=Math.round((pkUse.price||0)/(pkUse.sessoesTotal||PACOTE_SESSOES)*100)/100; }
   state.draft.stockUsage.forEach(u=>registrarUsoEstoque(u.estoqueItemId, u.qty));
   saveRecord(rec, (recordId)=>{
@@ -1136,6 +1148,7 @@ function confirmSave(){
   savedToast('Atendimento salvo');
 }
 function cancelFlow(){
+  if(state.atrasoHandle){ clearInterval(state.atrasoHandle); state.atrasoHandle=null; }
   stopTick();
   if(state.pendingAgendamento){
     const ag = state.pendingAgendamento;
@@ -1321,8 +1334,8 @@ function confirmAgAction(){
     const conf=findConflicts(a.novaData,a.novaHora,dur,ag.id);
     if(conf.length && !confirm('Já existe agendamento nesse horário ('+conf.map(c=>c.clientName||'sem nome').join(', ')+'). Reagendar mesmo assim?')) return;
     const reag=(ag.reagendamentos||[]).concat([Object.assign({de:{date:ag.date,startTime:ag.startTime}, para:{date:a.novaData,startTime:a.novaHora}}, base)]);
-    state.agenda.date=a.novaData; state.agenda.selectedId=ag.id; state.agAction=null;
-    updateAgendamento(ag.id,{date:a.novaData,startTime:a.novaHora,endTime:addMinutesToTime(a.novaHora,dur),status:'agendado',reagendamentos:reag,reminderSentAt:null});
+    state.agenda.date=a.novaData; state.agenda.selectedId=ag.id; state.agAction=null; state.avisoReag=ag.id;
+    updateAgendamento(ag.id,{date:a.novaData,startTime:a.novaHora,endTime:addMinutesToTime(a.novaHora,dur),status:'agendado',reagendamentos:reag,reminderSentAt:null,reagAvisoAt:null});
     showToast('Reagendado para '+fmtDM(new Date(a.novaData+'T00:00:00').getTime())+' às '+a.novaHora+'.');
     return;
   }
@@ -1396,6 +1409,114 @@ function diaLabel(dateStr){
   if(dateStr===tomorrow) return 'amanhã';
   return 'dia '+fmtDateLabel(dateStr).slice(0,5);
 }
+
+// ---------- atraso no início, risco, aviso de reagendamento ----------
+const ATRASO_LIM = 5;
+const ATRASO_MOTIVOS = ['Cliente chegou atrasada','Atendimento anterior atrasou','Imprevisto da profissional','Preparo / falta de produto','Trânsito / deslocamento','Outro'];
+function hhmmDe(ts){ const d=new Date(ts); return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0'); }
+function previstoTs(){
+  const t=state.timer; if(!t || t.ignorarAtraso) return null;
+  const ag=state.pendingAgendamento;
+  if(ag && ag.date===todayKeyNow() && ag.startTime) return new Date(ag.date+'T'+ag.startTime+':00').getTime();
+  if(!ag && t.horaManual) return new Date(todayKeyNow()+'T'+t.horaManual+':00').getTime();
+  return null;
+}
+function atrasoAtualMin(){ const p=previstoTs(); if(!p) return 0; return Math.max(0,Math.round((Date.now()-p)/60000)); }
+function atrasoTexto(){
+  const t=state.timer, p=previstoTs(); if(!p) return '';
+  if(t.status==='idle'){ const a=atrasoAtualMin(); return 'Marcado para '+hhmmDe(p)+' · agora '+hhmmDe(Date.now())+(a>0?' · '+a+' min de atraso':' · no horário'); }
+  return t.atrasoMin>0 ? 'Marcado para '+hhmmDe(p)+' · começou às '+hhmmDe(t.inicioReal)+' · '+t.atrasoMin+' min de atraso' : 'Começou no horário ('+hhmmDe(p)+') ✓';
+}
+function atrasoRecordFields(){
+  const t=state.timer; const p=previstoTs(); if(!p || !t.inicioReal) return {};
+  const f={horaPrevista:hhmmDe(p), inicioReal:t.inicioReal, atrasoMin:Math.max(0,Math.round((t.inicioReal-p)/60000))};
+  if(f.atrasoMin>=ATRASO_LIM){ f.atrasoMotivo=t.atrasoMotivo||''; f.atrasoObs=(t.atrasoObs||'').trim(); }
+  return f;
+}
+function atrasoPendente(){ const f=atrasoRecordFields(); return f.atrasoMin>=ATRASO_LIM && !state.timer.atrasoMotivo; }
+function setAtrasoMotivo(m){ state.timer.atrasoMotivo=m; render(); }
+function setHoraManual(v){ state.timer.horaManual=v; render(); }
+function renderAtrasoPanel(){
+  const t=state.timer; const p=previstoTs();
+  const box=el('div','text-left rounded-xl p-3 mb-4 bg-white shadow-sm'); box.style.border='1px solid var(--rose-light)';
+  if(!p){
+    if(t.status!=='idle' || state.pendingAgendamento || t.ignorarAtraso) return null;
+    const b=el('button','tap text-xs underline opacity-70', t.showHoraManual?'fechar':'Esse atendimento tinha horário marcado? Informe aqui');
+    b.onclick=()=>{ t.showHoraManual=!t.showHoraManual; render(); };
+    const w=el('div','text-center mb-3'); w.appendChild(b);
+    if(t.showHoraManual){ const ti=el('input','rounded-lg px-2 py-2 text-sm mt-2'); ti.type='time'; ti.style.border='1px solid var(--rose-light)'; ti.onchange=e=>setHoraManual(e.target.value); w.appendChild(ti); }
+    return w;
+  }
+  const info=el('p','text-sm font-medium', atrasoTexto()); info.id='atraso-info'; box.appendChild(info);
+  const late = t.status==='idle' ? atrasoAtualMin()>=ATRASO_LIM : t.atrasoMin>=ATRASO_LIM;
+  if(late){
+    info.style.color='var(--amber)';
+    const mw=el('div','mt-3'); mw.id='atraso-motivos';
+    mw.appendChild(el('p','text-xs font-semibold mb-2','Motivo do atraso'));
+    const row=el('div','flex flex-wrap gap-2 mb-2');
+    ATRASO_MOTIVOS.forEach(m=>{ const c=el('button','tap chip px-3 py-2 rounded-full text-xs bg-white shadow-sm',m); c.style.border='1px solid var(--rose-light)'; if(t.atrasoMotivo===m) c.classList.add('active'); c.onclick=()=>setAtrasoMotivo(m); row.appendChild(c); });
+    mw.appendChild(row);
+    const ob=el('input','w-full rounded-lg px-2 py-2 text-sm'); ob.id='atraso-obs'; ob.placeholder='Escreva o que aconteceu (opcional)'; ob.style.border='1px solid var(--rose-light)'; ob.value=t.atrasoObs||''; ob.oninput=e=>{ t.atrasoObs=e.target.value; };
+    mw.appendChild(ob);
+    if(!t.atrasoMotivo) mw.appendChild(el('p','text-xs mt-1 opacity-60','Escolha o motivo para poder finalizar o atendimento.'));
+    box.appendChild(mw);
+  }
+  if(t.status==='idle'){
+    if(state.atrasoHandle) clearInterval(state.atrasoHandle);
+    state.atrasoHandle=setInterval(()=>{
+      if(state.screen!=='timer' || state.timer.status!=='idle'){ clearInterval(state.atrasoHandle); state.atrasoHandle=null; return; }
+      const e=document.getElementById('atraso-info'); if(e) e.textContent=atrasoTexto();
+      if(atrasoAtualMin()>=ATRASO_LIM && !document.getElementById('atraso-motivos')) render();
+    },20000);
+  }
+  return box;
+}
+
+function riscoCliente(clientId){
+  const r={faltas:0,tarde:0,n:0}; if(!clientId) return r;
+  const mine=agendamentos.filter(a=>a.clientId===clientId);
+  mine.forEach(a=>{ if(a.status==='faltou' && !a.ocorrencia) r.faltas++; });
+  agOcorrencias(mine).forEach(e=>{
+    if(e.kind==='falta') r.faltas++;
+    else if(e.kind==='cancelamento' && e.origem==='cliente' && e.horasAntes!=null && e.horasAntes<24) r.tarde++;
+  });
+  r.n=r.faltas+r.tarde; return r;
+}
+function riscoTexto(clientId){
+  const r=riscoCliente(clientId); if(r.n<2) return '';
+  const parts=[]; if(r.faltas) parts.push('faltou '+r.faltas+'x'); if(r.tarde) parts.push('cancelou '+r.tarde+'x em cima da hora');
+  return 'Atenção: essa cliente já '+parts.join(' e ')+'.';
+}
+function riscoHtml(ag){
+  const t=riscoTexto(ag.clientId); if(!t) return '';
+  return `<p class="text-xs mt-2 px-2 py-2 rounded-lg" style="background:var(--danger-light);color:var(--danger)">⚠ ${t} Vale pedir confirmação na véspera ou um sinal para reservar o horário.</p>`;
+}
+function diaCompleto(date){ const w=weekdayLabel(date).split('-')[0].toLowerCase(); return w+' ('+fmtDateLabel(date).slice(0,5)+')'; }
+function reagendaMsg(ag){
+  const r=(ag.reagendamentos||[]).slice(-1)[0];
+  const tpl = (r && r.origem==='cliente') ? (config.reagendaClienteTemplate||DEFAULT_CONFIG.reagendaClienteTemplate) : (config.reagendaTemplate||DEFAULT_CONFIG.reagendaTemplate);
+  return tpl.replace('{nome}',(ag.clientName||'').split(' ')[0]).replace('{dia}',diaCompleto(ag.date)).replace('{hora}',ag.startTime).replace('{servico}',ag.serviceLabel);
+}
+function reagLink(ag){ const c=clients.find(c=>c.id===ag.clientId); return c ? waLink(c.whatsapp, reagendaMsg(ag)) : null; }
+function avisoReagBtn(ag, big){
+  const link=reagLink(ag);
+  if(!link) return null;
+  const a=el('a','tap text-xs px-3 py-2 rounded-lg '+(big?'block text-center w-full text-sm py-3':''), ag.reagAvisoAt ? 'Aviso de reagendamento enviado ✓' : 'Avisar reagendamento no WhatsApp');
+  a.href=link; a.target='_blank'; a.rel='noopener';
+  if(ag.reagAvisoAt){ a.style.background='#e4f1e9'; a.style.color='var(--green)'; } else { a.style.background='#1f8f4e'; a.style.color='white'; }
+  a.onclick=()=>{ setTimeout(()=>{ if(state.avisoReag===ag.id) state.avisoReag=null; updateAgendamento(ag.id,{reagAvisoAt:Date.now()}); },300); };
+  return a;
+}
+function renderAvisoReag(){
+  const ag=agendamentos.find(a=>a.id===state.avisoReag); if(!ag) return null;
+  const card=el('div','rounded-xl p-3 bg-white shadow-sm mb-4'); card.style.border='2px solid #1f8f4e';
+  card.appendChild(el('p','text-sm font-bold mb-1','Reagendado. Avisar '+((ag.clientName||'a cliente').split(' ')[0])+'?'));
+  card.appendChild(el('p','text-xs opacity-70 mb-2', diaCompleto(ag.date)+' às '+ag.startTime));
+  const b=avisoReagBtn(ag,true);
+  if(b) card.appendChild(b); else card.appendChild(el('p','text-xs opacity-70','Essa cliente não tem WhatsApp cadastrado. Cadastre na ficha dela para enviar o aviso.'));
+  const x=el('button','tap w-full text-xs underline opacity-70 mt-2','fechar'); x.onclick=()=>{ state.avisoReag=null; render(); }; card.appendChild(x);
+  return card;
+}
 function lembreteMsg(ag){
   const tpl = config.lembreteDiaTemplate || DEFAULT_CONFIG.lembreteDiaTemplate;
   return tpl.replace('{nome}',(ag.clientName||'').split(' ')[0]).replace('{dia}',diaLabel(ag.date)).replace('{hora}',ag.startTime).replace('{servico}',ag.serviceLabel);
@@ -1406,12 +1527,14 @@ function startFromAgendamento(ag){
   const svc = serviceById(ids[0]) || serviceById(ag.service);
   state.pendingAgendamento = ag;
   if(db && !usingLocal){ db.collection('agendamentos').doc(ag.id).update({status:'em_atendimento'}).catch(()=>{}); }
+  const retomando = ag.status==='em_atendimento';
   ag.status='em_atendimento';
   pickService(svc, ids);
+  if(retomando && state.timer) state.timer.ignorarAtraso=true;
 }
 
 // ---------- render ----------
-const MAIN_SCREENS = ['agenda-analise','pacotes','venda-pacote','servicos','home','agenda','clients','finance','reports','history','marketing','estoque','insumos-padrao','fechamento'];
+const MAIN_SCREENS = ['ocupacao','agenda-analise','pacotes','venda-pacote','servicos','home','agenda','clients','finance','reports','history','marketing','estoque','insumos-padrao','fechamento'];
 const PRO_SCREENS = ['pro-home','pro-agenda'];
 function goEstoque(){ state.screen='estoque'; render(); }
 function goInsumosPadrao(){ state.screen='insumos-padrao'; render(); }
@@ -1440,6 +1563,7 @@ function render(){
   else if(state.screen==='servicos') app.appendChild(renderServicos());
   else if(state.screen==='pacotes') app.appendChild(renderPacotes());
   else if(state.screen==='agenda-analise') app.appendChild(renderAgAnalise());
+  else if(state.screen==='ocupacao') app.appendChild(renderOcupacao());
   else if(state.screen==='venda-pacote' && state.venda) app.appendChild(renderVendaPacote());
   else if(state.screen==='pro-home') app.appendChild(renderProHome());
   else if(state.screen==='pro-agenda') app.appendChild(renderAgenda());
@@ -1766,6 +1890,7 @@ function renderTimer(){
   const display=el('div','digits text-6xl font-bold my-8'); display.id='timer-display';
   display.style.color='var(--rose-dark)'; display.textContent=fmtClock(timerElapsed());
   wrap.appendChild(display);
+  { const ap=renderAtrasoPanel(); if(ap) wrap.appendChild(ap); }
   const status=state.timer.status;
   const btnRow=el('div','flex flex-col gap-3');
   if(status==='idle') btnRow.appendChild(bigButton('Iniciar atendimento','var(--rose)',startTimer));
@@ -2116,6 +2241,7 @@ function renderClients(){
       const evC=agOcorrencias(agendamentos.filter(a=>a.clientId===c.id)).sort((a,b)=>(b.ts||0)-(a.ts||0));
       if(evC.length){
         const n=k=>evC.filter(e=>e.kind===k).length;
+        { const rt=riscoTexto(c.id); if(rt){ const rp=el('p','text-xs rounded-lg px-2 py-2 mt-2','⚠ '+rt); rp.style.background='var(--danger-light)'; rp.style.color='var(--danger)'; edit.appendChild(rp); } }
         edit.appendChild(el('p','text-xs opacity-50 mb-1 mt-2','Cancelamentos e remarcações'));
         const hb=el('div','rounded-lg px-2 py-2 text-xs'); hb.style.background='var(--cream)';
         hb.innerHTML=`<b>${n('cancelamento')}</b> cancelamento(s) · <b>${n('falta')}</b> falta(s) · <b>${n('reagendamento')}</b> reagendamento(s)<br>`+evC.slice(0,6).map(e=>`<span class="opacity-70">${fmtDM(e.ts)} · ${{cancelamento:'cancelou',falta:'faltou',reagendamento:'reagendou',erro:'erro de marcação'}[e.kind]} (${ORIGENS[e.origem]||e.origem}): ${e.motivo||''}</span>`).join('<br>');
@@ -2687,6 +2813,7 @@ function renderAgendaItem(ag, detail){
     <p class="text-sm">${ag.clientName||'(sem cliente)'} · ${ag.serviceLabel}</p>
     ${state.role!=='pro' && ag.bookedBy==='pro' ? `<p class="text-xs mt-1" style="color:var(--amber)">agendado por ${config.nomeProfissional}${ag.clienteDaProfissional?' · cliente dela (comissão)':''}</p>` : ''}
     ${historicoAgClienteHtml(ag)}
+    ${(ag.status==='agendado'||ag.status==='confirmado') ? riscoHtml(ag) : ''}
     ${ag.valor>0 ? `<p class="text-sm mt-1">Valor combinado: <b>${fmtMoney(ag.valor)}</b></p>`:''}
     ${(detail && (ag.serviceLabel||'').includes(' + ')) ? `<p class="text-xs opacity-70 mt-1">Serviços: ${ag.serviceLabel}</p>`:''}
     ${detail ? `<p class="text-sm mt-2"><b>Observação:</b> ${ag.note ? ag.note.replace(/</g,'&lt;') : '<span class="opacity-50">nenhuma</span>'}</p>` : (ag.note?`<p class="text-xs opacity-50 mt-1">${ag.note.replace(/</g,'&lt;')}</p>`:'')}
@@ -2721,6 +2848,7 @@ function renderAgendaItem(ag, detail){
     cancelBtn.style.background='var(--rose-light)'; cancelBtn.style.color='var(--rose-dark)'; cancelBtn.onclick=()=>openAgAction('cancelar', ag.id);
     const reagBtn=el('button','tap text-xs px-3 py-2 rounded-lg','Reagendar'); reagBtn.style.background='var(--amber-light)'; reagBtn.style.color='var(--amber)'; reagBtn.onclick=()=>openAgAction('reagendar', ag.id);
     btnRow.appendChild(reagBtn); btnRow.appendChild(faltouBtn); btnRow.appendChild(cancelBtn);
+    if(state.role!=='pro' && (ag.reagendamentos||[]).length){ const ab=avisoReagBtn(ag,false); if(ab) btnRow.appendChild(ab); }
     row.appendChild(btnRow);
   }
   if(ag.status==='em_atendimento' && (state.role!=='pro')){
@@ -2752,6 +2880,7 @@ function renderAgendaForm(){
     cl.innerHTML='<span class="text-sm">👤 <b>'+state.agenda.clientName+'</b></span>';
     const tr=el('button','tap text-xs underline opacity-70','trocar'); tr.onclick=agendaClearClient; cl.appendChild(tr);
     form.appendChild(cl);
+    { const rt=riscoTexto(state.agenda.clientId); if(rt){ const rp=el('p','text-xs rounded-lg px-2 py-2 mb-2','⚠ '+rt+' Vale pedir um sinal ou confirmar na véspera.'); rp.style.background='var(--danger-light)'; rp.style.color='var(--danger)'; form.appendChild(rp); } }
   } else {
     const search=el('input','w-full rounded-lg px-2 py-2 text-sm mb-2'); search.style.border='1px solid var(--rose-light)';
     search.id='ag-search'; search.placeholder='Buscar por nome...'; search.value=state.agenda.clientSearch; search.oninput=(e)=>agendaPickClientSearch(e.target.value);
@@ -2761,7 +2890,7 @@ function renderAgendaForm(){
     const list=el('div','space-y-1 mb-2');
     filtered.forEach(c=>{
       const row=el('button','tap w-full text-left rounded-lg px-2 py-2 text-sm'); row.style.background='var(--cream)';
-      row.textContent=c.name; row.onclick=()=>agendaSelectClient(c);
+      row.textContent=c.name+(riscoCliente(c.id).n>=2?'  ⚠':''); row.onclick=()=>agendaSelectClient(c);
       list.appendChild(row);
     });
     form.appendChild(list);
@@ -2895,6 +3024,7 @@ function renderAgenda(){
 
   const dayItems = agendamentos.filter(a=>a.date===state.agenda.date && a.status!=='cancelado').sort((a,b)=>timeToMinutes(a.startTime)-timeToMinutes(b.startTime));
 
+  if(state.avisoReag && !state.agAction){ const av=renderAvisoReag(); if(av) wrap.appendChild(av); }
   if(state.agAction){ wrap.appendChild(renderAgAction()); }
   if(state.agenda.formOpen && state.agenda.editingId){ wrap.appendChild(renderAgendaForm()); }
   if(state.agenda.view==='grid'){
@@ -3123,6 +3253,144 @@ function renderAgAnalise(){
   wrap.appendChild(lastBox);
   return wrap;
 }
+
+// ---------- pontualidade e horários vagos ----------
+function goOcupacao(){ state.screen='ocupacao'; render(); }
+function expedienteCfg(){ return Object.assign({}, DEFAULT_CONFIG.expediente, config.expediente||{}); }
+function fmtHM(min){ min=Math.max(0,Math.round(min)); const h=Math.floor(min/60), m=min%60; return h+'h'+(m?String(m).padStart(2,'0'):''); }
+function minToHHMM(m){ return String(Math.floor(m/60)).padStart(2,'0')+':'+String(m%60).padStart(2,'0'); }
+function ocupInicio(){
+  const key=state.ocupPeriod||'30d'; const d=new Date();
+  if(key==='7d'){ d.setDate(d.getDate()-7); return localKey(d); }
+  if(key==='30d'){ d.setDate(d.getDate()-30); return localKey(d); }
+  if(key==='90d'){ d.setDate(d.getDate()-90); return localKey(d); }
+  if(key==='month') return todayKeyNow().slice(0,7)+'-01';
+  const ds=agendamentos.map(a=>a.date).filter(Boolean).sort(); const lim=new Date(); lim.setDate(lim.getDate()-365);
+  return ds.length && ds[0]>localKey(lim) ? ds[0] : localKey(lim);
+}
+function ocupIntervalos(dateKey, linked){
+  const out=[];
+  agendamentos.forEach(a=>{ if(a.date!==dateKey || a.status==='cancelado' || a.status==='faltou' || !a.startTime || !a.endTime) return; out.push([timeToMinutes(a.startTime), timeToMinutes(a.endTime)]); });
+  if(dateKey<todayKeyNow()) records.forEach(r=>{ if(!r.startedAt || linked.has(r.id) || todayKey(r.startedAt)!==dateKey) return; const d=new Date(r.startedAt); const s=d.getHours()*60+d.getMinutes(); out.push([s, s+Math.max(5,r.durationMin||30)]); });
+  return out;
+}
+function uniaoMin(iv, lo, hi){
+  const a=iv.map(([s,e])=>[Math.max(s,lo),Math.min(e,hi)]).filter(([s,e])=>e>s).sort((x,y)=>x[0]-y[0]);
+  const m=[]; a.forEach(x=>{ const l=m[m.length-1]; if(l && x[0]<=l[1]) l[1]=Math.max(l[1],x[1]); else m.push(x.slice()); });
+  return m;
+}
+function janelasLivres(uni, lo, hi){ const out=[]; let cur=lo; uni.forEach(([s,e])=>{ if(s>cur) out.push([cur,s]); cur=Math.max(cur,e); }); if(cur<hi) out.push([cur,hi]); return out; }
+function renderOcupacao(){
+  const wrap=el('div');
+  wrap.appendChild(backButton(goReports));
+  wrap.appendChild(el('h2','text-xl font-bold mb-1','Pontualidade e horários vagos'));
+  wrap.appendChild(el('p','text-xs opacity-60 mb-4','Quanto do expediente ficou ocupado e quanto o início dos atendimentos atrasou.'));
+  const ex=expedienteCfg(); const lo=timeToMinutes(ex.ini), hi=timeToMinutes(ex.fim);
+  // expediente
+  const eb=el('div','rounded-xl p-3 mb-4 bg-white shadow-sm'); eb.style.border='1px solid var(--hairline)';
+  eb.appendChild(el('p','text-xs font-semibold mb-2','Expediente do studio (base do cálculo)'));
+  const dn=['Dom','Seg','Ter','Qua','Qui','Sex','Sáb']; const dr=el('div','flex flex-wrap gap-1 mb-2');
+  dn.forEach((n,i)=>{ const on=ex.dias.includes(i); const c=el('button','tap chip px-3 py-1 rounded-full text-xs bg-white',n); c.style.border='1px solid var(--rose-light)'; if(on) c.classList.add('active'); c.onclick=()=>{ const dias=on?ex.dias.filter(x=>x!==i):ex.dias.concat([i]).sort(); saveConfig({expediente:Object.assign({},ex,{dias})}); }; dr.appendChild(c); });
+  eb.appendChild(dr);
+  const tr=el('div','flex items-center gap-2 text-xs');
+  const t1=el('input','rounded-lg px-2 py-1'); t1.type='time'; t1.value=ex.ini; t1.style.border='1px solid var(--rose-light)'; t1.onchange=e=>{ if(e.target.value) saveConfig({expediente:Object.assign({},ex,{ini:e.target.value})}); };
+  const t2=el('input','rounded-lg px-2 py-1'); t2.type='time'; t2.value=ex.fim; t2.style.border='1px solid var(--rose-light)'; t2.onchange=e=>{ if(e.target.value) saveConfig({expediente:Object.assign({},ex,{fim:e.target.value})}); };
+  tr.appendChild(el('span','','das')); tr.appendChild(t1); tr.appendChild(el('span','','às')); tr.appendChild(t2);
+  eb.appendChild(tr); wrap.appendChild(eb);
+  if(hi<=lo || !ex.dias.length){ wrap.appendChild(el('p','text-sm opacity-60','Ajuste o expediente acima para ver os horários vagos.')); return wrap; }
+
+  const row=el('div','flex flex-wrap gap-2 mb-4');
+  [['7d','7 dias'],['30d','30 dias'],['90d','90 dias'],['month','este mês'],['all','tudo']].forEach(([k,l])=>{ const b=el('button','tap chip px-3 py-2 rounded-full text-sm bg-white shadow-sm',l); b.style.border='1px solid var(--rose-light)'; if((state.ocupPeriod||'30d')===k) b.classList.add('active'); b.onclick=()=>{ state.ocupPeriod=k; render(); }; row.appendChild(b); });
+  wrap.appendChild(row);
+
+  // ----- horários vagos (dias passados) -----
+  const linked=new Set(agendamentos.map(a=>a.linkedRecordId).filter(Boolean));
+  const ini=ocupInicio(); const hoje=todayKeyNow();
+  const cap=[0,0,0,0,0,0,0], occ=[0,0,0,0,0,0,0], nd=[0,0,0,0,0,0,0];
+  const hOcc={}, hCap={}; for(let h=Math.floor(lo/60); h<Math.ceil(hi/60); h++){ hOcc[h]=0; hCap[h]=0; }
+  let d=new Date(ini+'T00:00:00'); let guard=0;
+  while(localKey(d)<hoje && guard++<400){
+    const k=localKey(d); const dow=d.getDay();
+    if(ex.dias.includes(dow)){
+      const uni=uniaoMin(ocupIntervalos(k,linked),lo,hi);
+      const o=uni.reduce((a,[s,e])=>a+(e-s),0);
+      cap[dow]+=hi-lo; occ[dow]+=o; nd[dow]++;
+      Object.keys(hOcc).forEach(h=>{ h=+h; const a=Math.max(lo,h*60), b=Math.min(hi,(h+1)*60); if(b<=a) return; hCap[h]+=b-a; hOcc[h]+=uniaoMin(uni,a,b).reduce((x,[s,e])=>x+(e-s),0); });
+    }
+    d.setDate(d.getDate()+1);
+  }
+  const capT=cap.reduce((a,b)=>a+b,0), occT=occ.reduce((a,b)=>a+b,0);
+  wrap.appendChild(el('p','text-sm font-semibold mb-2','Horários vagos no período'));
+  if(!capT){ wrap.appendChild(el('p','text-sm opacity-60 mb-4','Nenhum dia de expediente fechado nesse período ainda.')); }
+  else {
+    const pct=Math.round(occT/capT*100);
+    const g=el('div','grid grid-cols-3 gap-2 mb-3');
+    [['Expediente',fmtHM(capT),'disponível'],['Ocupado',fmtHM(occT),pct+'%'],['Vago',fmtHM(capT-occT),(100-pct)+'%']].forEach(([l,v,sub])=>{ const c=el('div','rounded-xl p-3 bg-white shadow-sm'); c.style.border='1px solid var(--rose-light)'; c.innerHTML=`<p class="text-xs opacity-60">${l}</p><p class="text-lg font-bold">${v}</p><p class="text-xs opacity-50">${sub}</p>`; g.appendChild(c); });
+    wrap.appendChild(g);
+    const db=el('div','rounded-xl p-3 mb-3 bg-white shadow-sm'); db.style.border='1px solid var(--hairline)';
+    db.appendChild(el('p','text-xs font-semibold mb-2','Por dia da semana (média de horas vagas por dia)'));
+    [1,2,3,4,5,6,0].filter(i=>nd[i]).forEach(i=>{
+      const p=Math.round(occ[i]/cap[i]*100); const vagoMedio=(cap[i]-occ[i])/nd[i];
+      const l=el('div','mb-2'); l.innerHTML=`<div class="flex justify-between text-xs"><span>${dn[i]}</span><span><b>${p}%</b> ocupado · sobra ${fmtHM(vagoMedio)}</span></div><div style="height:6px;border-radius:6px;background:var(--rose-light);margin-top:3px"><div style="height:6px;border-radius:6px;background:var(--rose);width:${Math.max(2,p)}%"></div></div>`; db.appendChild(l);
+    });
+    wrap.appendChild(db);
+    const hrs=Object.keys(hOcc).map(Number).filter(h=>hCap[h]>0).map(h=>({h,p:Math.round(hOcc[h]/hCap[h]*100)}));
+    if(hrs.length){
+      const vazios=hrs.slice().sort((a,b)=>a.p-b.p).slice(0,3).map(x=>String(x.h).padStart(2,'0')+'h');
+      const hb=el('div','rounded-xl p-3 mb-4 bg-white shadow-sm'); hb.style.border='1px solid var(--hairline)';
+      hb.appendChild(el('p','text-xs font-semibold mb-1','Por faixa de horário'));
+      hb.appendChild(el('p','text-xs opacity-70 mb-2','Mais vazias: '+vazios.join(', ')));
+      const bars=el('div','flex items-end gap-1'); bars.style.height='80px';
+      hrs.forEach(x=>{ const c=el('div','flex-1 text-center'); c.style.fontSize='10px'; c.innerHTML=`<div style="height:${Math.round(x.p*0.55)+2}px;background:var(--rose);border-radius:3px 3px 0 0;margin-bottom:2px"></div>${String(x.h).padStart(2,'0')}`; bars.appendChild(c); });
+      hb.appendChild(bars); wrap.appendChild(hb);
+    }
+  }
+  wrap.appendChild(el('p','text-xs opacity-50 mb-4','Conta agendamentos (menos cancelados e faltas) e atendimentos lançados sem agenda. Hoje e dias futuros não entram aqui.'));
+
+  // ----- próximos 7 dias -----
+  wrap.appendChild(el('p','text-sm font-semibold mb-2','Janelas livres nos próximos 7 dias'));
+  const nb=el('div','rounded-xl p-3 mb-5 bg-white shadow-sm text-sm'); nb.style.border='1px solid var(--hairline)';
+  let any=false; const now=new Date(); const nowMin=now.getHours()*60+now.getMinutes();
+  for(let i=0;i<7;i++){
+    const dd=new Date(); dd.setDate(dd.getDate()+i); const k=localKey(dd); if(!ex.dias.includes(dd.getDay())) continue;
+    const from=(i===0)?Math.max(lo,Math.ceil(nowMin/30)*30):lo; if(from>=hi) continue;
+    const uni=uniaoMin(ocupIntervalos(k,linked),from,hi);
+    const jan=janelasLivres(uni,from,hi).filter(([s,e])=>e-s>=60);
+    const l=el('div','mb-2');
+    const nome=(i===0?'Hoje':i===1?'Amanhã':dn[dd.getDay()])+' '+fmtDateLabel(k).slice(0,5);
+    l.innerHTML=`<b>${nome}</b><br><span class="text-xs opacity-70">${jan.length? jan.map(([s,e])=>minToHHMM(s)+'–'+minToHHMM(e)+' ('+fmtHM(e-s)+')').join(' · ') : 'sem janela de 1h ou mais'}</span>`;
+    if(jan.length) any=true; nb.appendChild(l);
+  }
+  if(!nb.children.length) nb.appendChild(el('p','text-xs opacity-60','Sem dias de expediente nos próximos 7 dias.'));
+  wrap.appendChild(nb);
+
+  // ----- pontualidade -----
+  const iniTs=new Date(ini+'T00:00:00').getTime();
+  const rs=records.filter(r=>r.atrasoMin!==undefined && (r.startedAt||0)>=iniTs);
+  wrap.appendChild(el('p','text-sm font-semibold mb-2','Pontualidade no início dos atendimentos'));
+  if(!rs.length){ wrap.appendChild(el('p','text-xs opacity-60 mb-4','Ainda sem dados. Passa a contar quando o atendimento é iniciado pelo cronômetro a partir de um agendamento (ou com o horário marcado informado).')); return wrap; }
+  const atr=rs.filter(r=>r.atrasoMin>=ATRASO_LIM); const soma=atr.reduce((a,r)=>a+r.atrasoMin,0);
+  const g2=el('div','grid grid-cols-3 gap-2 mb-3');
+  [['Medidos',rs.length,'atendimentos'],['Atrasados',atr.length,Math.round(atr.length/rs.length*100)+'%'],['Atraso médio',atr.length?Math.round(soma/atr.length)+' min':'—','quando atrasa']].forEach(([l,v,sub])=>{ const c=el('div','rounded-xl p-3 bg-white shadow-sm'); c.style.border='1px solid var(--rose-light)'; c.innerHTML=`<p class="text-xs opacity-60">${l}</p><p class="text-lg font-bold">${v}</p><p class="text-xs opacity-50">${sub}</p>`; g2.appendChild(c); });
+  wrap.appendChild(g2);
+  if(atr.length){
+    const cont={}; atr.forEach(r=>{ const k=r.atrasoMotivo||'Sem motivo'; cont[k]=cont[k]||{n:0,min:0}; cont[k].n++; cont[k].min+=r.atrasoMin; });
+    const mb=el('div','rounded-xl p-3 mb-3 bg-white shadow-sm'); mb.style.border='1px solid var(--hairline)';
+    mb.appendChild(el('p','text-xs font-semibold mb-2','Motivos dos atrasos'));
+    Object.entries(cont).sort((a,b)=>b[1].n-a[1].n).forEach(([m,v])=>{ const w=Math.max(4,Math.round(v.n/atr.length*100)); const l=el('div','mb-2'); l.innerHTML=`<div class="flex justify-between text-xs"><span>${m.replace(/</g,'&lt;')}</span><b>${v.n}x · ${v.min} min</b></div><div style="height:5px;border-radius:5px;background:var(--rose-light);margin-top:3px"><div style="height:5px;border-radius:5px;background:var(--rose);width:${w}%"></div></div>`; mb.appendChild(l); });
+    wrap.appendChild(mb);
+    const por={}; rs.forEach(r=>{ const k=r.performedBy==='pro'?config.nomeProfissional:'Dona'; por[k]=por[k]||{t:0,a:0,m:0}; por[k].t++; if(r.atrasoMin>=ATRASO_LIM){ por[k].a++; por[k].m+=r.atrasoMin; } });
+    const pb=el('div','rounded-xl p-3 mb-3 bg-white shadow-sm text-xs'); pb.style.border='1px solid var(--hairline)';
+    pb.appendChild(el('p','font-semibold mb-2','Quem atende'));
+    Object.entries(por).forEach(([k,v])=>{ const l=el('div','flex justify-between mb-1'); l.innerHTML=`<span>${k}</span><span>${v.a} de ${v.t} atrasados${v.a?' · média '+Math.round(v.m/v.a)+' min':''}</span>`; pb.appendChild(l); });
+    wrap.appendChild(pb);
+    const lb=el('div','space-y-2');
+    lb.appendChild(el('p','text-xs font-semibold','Últimos atrasos'));
+    atr.sort((a,b)=>(b.startedAt||0)-(a.startedAt||0)).slice(0,8).forEach(r=>{ const x=el('div','rounded-lg px-3 py-2 bg-white text-xs'); x.style.border='1px solid var(--hairline)'; x.innerHTML=`<b>${(r.clientName||'(sem nome)').replace(/</g,'&lt;')}</b> · ${fmtDM(r.startedAt)} · previsto ${r.horaPrevista}, começou ${hhmmDe(r.inicioReal)} (${r.atrasoMin} min)<br><span class="opacity-70">${(r.atrasoMotivo||'sem motivo').replace(/</g,'&lt;')}${r.atrasoObs?' — '+r.atrasoObs.replace(/</g,'&lt;'):''}</span>`; lb.appendChild(x); });
+    wrap.appendChild(lb);
+  }
+  return wrap;
+}
 function renderReports(){
   const wrap=el('div');
   wrap.appendChild(backButton(goHome));
@@ -3142,6 +3410,8 @@ function renderReports(){
 
   const agBtn = el('button','tap w-full text-center py-3 rounded-xl text-sm font-medium mb-3','Cancelamentos e reagendamentos →');
   agBtn.style.background='var(--amber-light)'; agBtn.style.color='var(--amber)'; agBtn.onclick=goAgAnalise; wrap.appendChild(agBtn);
+  const ocBtn = el('button','tap w-full text-center py-3 rounded-xl text-sm font-medium mb-3','Pontualidade e horários vagos →');
+  ocBtn.style.background='var(--amber-light)'; ocBtn.style.color='var(--amber)'; ocBtn.onclick=goOcupacao; wrap.appendChild(ocBtn);
   const exportBtn = el('button','tap w-full text-center py-3 rounded-xl text-sm font-medium mb-4','Exportar CSV (todo o histórico)');
   exportBtn.style.background='var(--rose-light)'; exportBtn.style.color='var(--rose-dark)';
   exportBtn.onclick=exportCsv;
