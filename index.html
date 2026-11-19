@@ -1288,6 +1288,97 @@ function setAgendamentoStatus(id, status){
   const a=agendamentos.find(a=>a.id===id); if(a){ a.status=status; if(usingLocal) saveLocalAgendamentos(); }
   render();
 }
+// ---------- cancelamento / reagendamento / falta com motivo ----------
+const ORIGENS = {cliente:'Cliente', dona:'Studio (dona)', profissional:'Profissional', erro:'Erro de marcação'};
+const MOTIVOS = {
+  cliente:['Imprevisto da cliente','Desistiu do serviço','Doença','Financeiro (sem dinheiro agora)','Conflito de horário / trabalho','Esqueceu','Remarcou por conta própria','Outro'],
+  dona:['Imprevisto da dona','Doença','Falta de produto / material','Problema no local (luz, água, internet)','Agenda marcada errado / horário duplicado','Outro'],
+  profissional:['Imprevisto da profissional','Doença','Atraso ou não pôde comparecer','Outro'],
+  erro:['Marcado por engano','Cliente ou serviço errado','Duplicado'],
+};
+function agDateTime(ag){ return new Date(ag.date+'T'+(ag.startTime||'00:00')+':00'); }
+function horasAteAgendamento(ag){ return Math.round((agDateTime(ag).getTime()-Date.now())/360000)/10; }
+function openAgAction(type, id){
+  const ag=agendamentos.find(a=>a.id===id); if(!ag) return;
+  state.agAction={type, id, origem: type==='faltou'?'cliente':null, motivo:null, obs:'', novaData:ag.date, novaHora:ag.startTime};
+  state.agenda.selectedId=null; render();
+  try{ window.scrollTo({top:0,behavior:'smooth'}); }catch(e){}
+}
+function closeAgAction(){ state.agAction=null; render(); }
+function agActionSetOrigem(o){ const a=state.agAction; a.origem=o; a.motivo=(o==='erro')?MOTIVOS.erro[0]:null; render(); }
+function agActionSetMotivo(m){ state.agAction.motivo=m; render(); }
+function confirmAgAction(){
+  const a=state.agAction; if(!a) return;
+  const ag=agendamentos.find(x=>x.id===a.id); if(!ag){ state.agAction=null; render(); return; }
+  if(!a.origem){ showToast('Escolha quem motivou.'); return; }
+  if(!a.motivo){ showToast('Escolha o motivo.'); return; }
+  const obsEl=document.getElementById('agact-obs'); const obs=(obsEl?obsEl.value:a.obs||'').trim();
+  const base={origem:a.origem, motivo:a.motivo, obs, ts:Date.now(), quem:state.role==='pro'?'profissional':'dona', horasAntes:horasAteAgendamento(ag)};
+  if(a.type==='reagendar'){
+    if(!a.novaData||!a.novaHora){ showToast('Informe o novo dia e horário.'); return; }
+    if(a.novaData===ag.date && a.novaHora===ag.startTime){ showToast('Escolha um dia ou horário diferente.'); return; }
+    const dur=Math.max(5,timeToMinutes(ag.endTime)-timeToMinutes(ag.startTime));
+    const conf=findConflicts(a.novaData,a.novaHora,dur,ag.id);
+    if(conf.length && !confirm('Já existe agendamento nesse horário ('+conf.map(c=>c.clientName||'sem nome').join(', ')+'). Reagendar mesmo assim?')) return;
+    const reag=(ag.reagendamentos||[]).concat([Object.assign({de:{date:ag.date,startTime:ag.startTime}, para:{date:a.novaData,startTime:a.novaHora}}, base)]);
+    state.agenda.date=a.novaData; state.agenda.selectedId=ag.id; state.agAction=null;
+    updateAgendamento(ag.id,{date:a.novaData,startTime:a.novaHora,endTime:addMinutesToTime(a.novaHora,dur),status:'agendado',reagendamentos:reag,reminderSentAt:null});
+    showToast('Reagendado para '+fmtDM(new Date(a.novaData+'T00:00:00').getTime())+' às '+a.novaHora+'.');
+    return;
+  }
+  const tipo = a.type==='faltou' ? 'falta' : (a.origem==='erro' ? 'erro' : 'cancelamento');
+  state.agAction=null;
+  updateAgendamento(ag.id,{status: a.type==='faltou'?'faltou':'cancelado', ocorrencia:Object.assign({tipo}, base)});
+  if(a.type!=='faltou') deleteAgendamentoFromGoogle(ag);
+  showToast(tipo==='falta'?'Falta registrada.':(tipo==='erro'?'Agendamento removido (erro de marcação).':'Cancelamento registrado.'));
+}
+function renderAgAction(){
+  const a=state.agAction; const ag=agendamentos.find(x=>x.id===a.id); if(!ag) return el('div');
+  const titulo = a.type==='reagendar'?'Reagendar':(a.type==='faltou'?'Registrar falta':'Cancelar / excluir agendamento');
+  const card=el('div','rounded-xl p-3 bg-white shadow-sm mb-4'); card.style.border='2px solid var(--rose)';
+  card.appendChild(el('p','text-base font-bold mb-1',titulo));
+  card.appendChild(el('p','text-xs opacity-70 mb-3',(ag.clientName||'(sem cliente)')+' · '+ag.serviceLabel+' · '+fmtDM(new Date(ag.date+'T00:00:00').getTime())+' '+ag.startTime));
+  const chip=(label,on,fn)=>{ const b=el('button','tap chip px-3 py-2 rounded-full text-sm bg-white shadow-sm',label); b.style.border='1px solid var(--rose-light)'; if(on) b.classList.add('active'); b.onclick=fn; return b; };
+  if(a.type!=='faltou'){
+    card.appendChild(el('p','text-xs uppercase tracking-wide opacity-50 mb-2','Quem motivou?'));
+    const r1=el('div','flex flex-wrap gap-2 mb-3');
+    Object.keys(ORIGENS).filter(k=>k!=='erro' || a.type==='cancelar').forEach(k=>r1.appendChild(chip(k==='erro'?'Erro de marcação (excluir)':ORIGENS[k], a.origem===k, ()=>agActionSetOrigem(k))));
+    card.appendChild(r1);
+  }
+  if(a.origem){
+    card.appendChild(el('p','text-xs uppercase tracking-wide opacity-50 mb-2','Motivo'));
+    const r2=el('div','flex flex-wrap gap-2 mb-3');
+    const lista = a.type==='faltou' ? ['Não avisou','Avisou em cima da hora','Esqueceu','Outro'] : (MOTIVOS[a.origem]||[]);
+    lista.forEach(m=>r2.appendChild(chip(m, a.motivo===m, ()=>agActionSetMotivo(m))));
+    card.appendChild(r2);
+  }
+  if(a.type==='reagendar'){
+    card.appendChild(el('p','text-xs uppercase tracking-wide opacity-50 mb-1','Novo dia e horário'));
+    const row=el('div','flex gap-2 mb-3');
+    const di=el('input','rounded-lg px-2 py-2 text-sm'); di.type='date'; di.style.cssText='flex:1;border:1px solid var(--rose-light)'; di.value=a.novaData; di.onchange=e=>{ a.novaData=e.target.value; };
+    const ti=el('input','rounded-lg px-2 py-2 text-sm'); ti.type='time'; ti.style.cssText='width:110px;border:1px solid var(--rose-light)'; ti.value=a.novaHora; ti.onchange=e=>{ a.novaHora=e.target.value; };
+    row.appendChild(di); row.appendChild(ti); card.appendChild(row);
+  }
+  const ob=el('input','w-full rounded-lg px-2 py-2 text-sm mb-3'); ob.id='agact-obs'; ob.placeholder='Detalhe (opcional)'; ob.style.border='1px solid var(--rose-light)'; ob.value=a.obs||''; ob.oninput=e=>{ a.obs=e.target.value; };
+  card.appendChild(ob);
+  const txt = a.type==='reagendar'?'Confirmar reagendamento':(a.type==='faltou'?'Registrar falta':(a.origem==='erro'?'Excluir agendamento':'Confirmar cancelamento'));
+  card.appendChild(bigButton(txt,'var(--rose)',confirmAgAction));
+  const vb=el('button','tap w-full text-xs underline opacity-70 mt-2','voltar sem alterar'); vb.onclick=closeAgAction; card.appendChild(vb);
+  return card;
+}
+function agOcorrencias(list){
+  // lista de eventos: cancelamentos, faltas, erros e reagendamentos
+  const ev=[];
+  list.forEach(ag=>{
+    if(ag.ocorrencia) ev.push(Object.assign({kind:ag.ocorrencia.tipo, ag}, ag.ocorrencia));
+    (ag.reagendamentos||[]).forEach(r=>ev.push(Object.assign({kind:'reagendamento', ag}, r)));
+  });
+  return ev;
+}
+function historicoAgClienteHtml(ag){
+  const reag=(ag.reagendamentos||[]); if(!reag.length) return '';
+  return `<p class="text-xs mt-2" style="color:var(--amber)">Reagendado ${reag.length}x: ${reag.map(r=>`${fmtDM(new Date(r.de.date+'T00:00:00').getTime())} ${r.de.startTime} → ${fmtDM(new Date(r.para.date+'T00:00:00').getTime())} ${r.para.startTime} (${ORIGENS[r.origem]||r.origem}: ${r.motivo})`).join('; ')}</p>`;
+}
 function cancelAgendamento(id){
   const a=agendamentos.find(a=>a.id===id);
   setAgendamentoStatus(id,'cancelado');
@@ -1309,7 +1400,7 @@ function lembreteMsg(ag){
   const tpl = config.lembreteDiaTemplate || DEFAULT_CONFIG.lembreteDiaTemplate;
   return tpl.replace('{nome}',(ag.clientName||'').split(' ')[0]).replace('{dia}',diaLabel(ag.date)).replace('{hora}',ag.startTime).replace('{servico}',ag.serviceLabel);
 }
-function marcarFaltou(id){ setAgendamentoStatus(id,'faltou'); }
+function marcarFaltou(id){ openAgAction('faltou', id); }
 function startFromAgendamento(ag){
   const ids = (ag.serviceIds && ag.serviceIds.length) ? ag.serviceIds : [ag.service];
   const svc = serviceById(ids[0]) || serviceById(ag.service);
@@ -1320,7 +1411,7 @@ function startFromAgendamento(ag){
 }
 
 // ---------- render ----------
-const MAIN_SCREENS = ['pacotes','venda-pacote','servicos','home','agenda','clients','finance','reports','history','marketing','estoque','insumos-padrao','fechamento'];
+const MAIN_SCREENS = ['agenda-analise','pacotes','venda-pacote','servicos','home','agenda','clients','finance','reports','history','marketing','estoque','insumos-padrao','fechamento'];
 const PRO_SCREENS = ['pro-home','pro-agenda'];
 function goEstoque(){ state.screen='estoque'; render(); }
 function goInsumosPadrao(){ state.screen='insumos-padrao'; render(); }
@@ -1348,6 +1439,7 @@ function render(){
   else if(state.screen==='fechamento') app.appendChild(renderFechamento());
   else if(state.screen==='servicos') app.appendChild(renderServicos());
   else if(state.screen==='pacotes') app.appendChild(renderPacotes());
+  else if(state.screen==='agenda-analise') app.appendChild(renderAgAnalise());
   else if(state.screen==='venda-pacote' && state.venda) app.appendChild(renderVendaPacote());
   else if(state.screen==='pro-home') app.appendChild(renderProHome());
   else if(state.screen==='pro-agenda') app.appendChild(renderAgenda());
@@ -2021,6 +2113,14 @@ function renderClients(){
       bdayInput.value=c.birthday||''; bdayInput.onchange=(e)=>setClientField(c.id,'birthday',e.target.value);
       edit.appendChild(el('p','text-xs opacity-50 mb-1 mt-2','Aniversário')); edit.appendChild(bdayInput);
 
+      const evC=agOcorrencias(agendamentos.filter(a=>a.clientId===c.id)).sort((a,b)=>(b.ts||0)-(a.ts||0));
+      if(evC.length){
+        const n=k=>evC.filter(e=>e.kind===k).length;
+        edit.appendChild(el('p','text-xs opacity-50 mb-1 mt-2','Cancelamentos e remarcações'));
+        const hb=el('div','rounded-lg px-2 py-2 text-xs'); hb.style.background='var(--cream)';
+        hb.innerHTML=`<b>${n('cancelamento')}</b> cancelamento(s) · <b>${n('falta')}</b> falta(s) · <b>${n('reagendamento')}</b> reagendamento(s)<br>`+evC.slice(0,6).map(e=>`<span class="opacity-70">${fmtDM(e.ts)} · ${{cancelamento:'cancelou',falta:'faltou',reagendamento:'reagendou',erro:'erro de marcação'}[e.kind]} (${ORIGENS[e.origem]||e.origem}): ${e.motivo||''}</span>`).join('<br>');
+        edit.appendChild(hb);
+      }
       edit.appendChild(el('p','text-xs opacity-50 mb-1 mt-2','Rotina de serviços (pra avisar quando tiver na hora de voltar)'));
       (c.routines||[]).forEach(r=>{
         const rRow = el('div','flex items-center justify-between text-sm rounded-lg px-2 py-2 mb-1'); rRow.style.background='var(--cream)';
@@ -2586,6 +2686,7 @@ function renderAgendaItem(ag, detail){
     </div>
     <p class="text-sm">${ag.clientName||'(sem cliente)'} · ${ag.serviceLabel}</p>
     ${state.role!=='pro' && ag.bookedBy==='pro' ? `<p class="text-xs mt-1" style="color:var(--amber)">agendado por ${config.nomeProfissional}${ag.clienteDaProfissional?' · cliente dela (comissão)':''}</p>` : ''}
+    ${historicoAgClienteHtml(ag)}
     ${ag.valor>0 ? `<p class="text-sm mt-1">Valor combinado: <b>${fmtMoney(ag.valor)}</b></p>`:''}
     ${(detail && (ag.serviceLabel||'').includes(' + ')) ? `<p class="text-xs opacity-70 mt-1">Serviços: ${ag.serviceLabel}</p>`:''}
     ${detail ? `<p class="text-sm mt-2"><b>Observação:</b> ${ag.note ? ag.note.replace(/</g,'&lt;') : '<span class="opacity-50">nenhuma</span>'}</p>` : (ag.note?`<p class="text-xs opacity-50 mt-1">${ag.note.replace(/</g,'&lt;')}</p>`:'')}
@@ -2617,8 +2718,9 @@ function renderAgendaItem(ag, detail){
     const faltouBtn=el('button','tap text-xs px-3 py-2 rounded-lg','Faltou');
     faltouBtn.style.background='var(--danger-light)'; faltouBtn.style.color='var(--danger)'; faltouBtn.onclick=()=>marcarFaltou(ag.id);
     const cancelBtn=el('button','tap text-xs px-3 py-2 rounded-lg','Cancelar');
-    cancelBtn.style.background='var(--rose-light)'; cancelBtn.style.color='var(--rose-dark)'; cancelBtn.onclick=()=>cancelAgendamento(ag.id);
-    btnRow.appendChild(faltouBtn); btnRow.appendChild(cancelBtn);
+    cancelBtn.style.background='var(--rose-light)'; cancelBtn.style.color='var(--rose-dark)'; cancelBtn.onclick=()=>openAgAction('cancelar', ag.id);
+    const reagBtn=el('button','tap text-xs px-3 py-2 rounded-lg','Reagendar'); reagBtn.style.background='var(--amber-light)'; reagBtn.style.color='var(--amber)'; reagBtn.onclick=()=>openAgAction('reagendar', ag.id);
+    btnRow.appendChild(reagBtn); btnRow.appendChild(faltouBtn); btnRow.appendChild(cancelBtn);
     row.appendChild(btnRow);
   }
   if(ag.status==='em_atendimento' && (state.role!=='pro')){
@@ -2793,10 +2895,11 @@ function renderAgenda(){
 
   const dayItems = agendamentos.filter(a=>a.date===state.agenda.date && a.status!=='cancelado').sort((a,b)=>timeToMinutes(a.startTime)-timeToMinutes(b.startTime));
 
+  if(state.agAction){ wrap.appendChild(renderAgAction()); }
   if(state.agenda.formOpen && state.agenda.editingId){ wrap.appendChild(renderAgendaForm()); }
   if(state.agenda.view==='grid'){
     const sel = state.agenda.selectedId ? agendamentos.find(a=>a.id===state.agenda.selectedId) : null;
-    if(sel && !state.agenda.editingId){ wrap.appendChild(el('p','text-xs uppercase tracking-wide mb-2','Detalhes do agendamento (toque de novo no horário para fechar)')); wrap.appendChild(renderAgendaItem(sel,true)); }
+    if(sel && !state.agenda.editingId && !state.agAction){ wrap.appendChild(el('p','text-xs uppercase tracking-wide mb-2','Detalhes do agendamento (toque de novo no horário para fechar)')); wrap.appendChild(renderAgendaItem(sel,true)); }
     wrap.appendChild(renderAgendaGrid(dayItems));
   } else {
     if(!dayItems.length) wrap.appendChild(el('p','text-sm opacity-60 mb-4','Nenhum agendamento nesse dia.'));
@@ -2928,6 +3031,98 @@ function renderAgendaGrid(dayItems){
   return outer;
 }
 
+function agAnaliseInicio(){
+  const key=state.agAnalisePeriod||'90d'; const hoje=todayKeyNow();
+  const d=new Date(); let ini='0000-00-00';
+  if(key==='30d'){ d.setDate(d.getDate()-30); ini=localKey(d); }
+  else if(key==='90d'){ d.setDate(d.getDate()-90); ini=localKey(d); }
+  else if(key==='month'){ ini=hoje.slice(0,7)+'-01'; }
+  return ini;
+}
+function goAgAnalise(){ state.screen='agenda-analise'; render(); }
+function renderAgAnalise(){
+  const wrap=el('div');
+  wrap.appendChild(backButton(goReports));
+  wrap.appendChild(el('h2','text-xl font-bold mb-1','Cancelamentos e reagendamentos'));
+  wrap.appendChild(el('p','text-xs opacity-60 mb-4','Quantos, quem motivou e por quê. As ocorrências contam pelo dia em que foram registradas.'));
+  const row=el('div','flex flex-wrap gap-2 mb-4');
+  [['30d','30 dias'],['90d','90 dias'],['month','este mês'],['all','tudo']].forEach(([k,l])=>{ const b=el('button','tap chip px-3 py-2 rounded-full text-sm bg-white shadow-sm',l); b.style.border='1px solid var(--rose-light)'; if((state.agAnalisePeriod||'90d')===k) b.classList.add('active'); b.onclick=()=>{ state.agAnalisePeriod=k; render(); }; row.appendChild(b); });
+  wrap.appendChild(row);
+  const ini=agAnaliseInicio();
+  const iniTs = ini==='0000-00-00' ? 0 : new Date(ini+'T00:00:00').getTime();
+  const lista=agendamentos.filter(a=>a.date>=ini || (a.ocorrencia&&a.ocorrencia.ts>=iniTs) || (a.reagendamentos||[]).some(r=>r.ts>=iniTs));
+  const validos=lista.filter(a=>!(a.ocorrencia&&a.ocorrencia.tipo==='erro'));
+  const ev=agOcorrencias(agendamentos).filter(e=>(e.ts||0)>=iniTs);
+  const canc=ev.filter(e=>e.kind==='cancelamento'), falt=ev.filter(e=>e.kind==='falta'), reag=ev.filter(e=>e.kind==='reagendamento'), erros=ev.filter(e=>e.kind==='erro');
+  if(!lista.length){ wrap.appendChild(el('p','text-sm opacity-60','Nenhum agendamento nesse período ainda.')); return wrap; }
+  const pct=(n,t)=>t>0?Math.round(n/t*100)+'%':'—';
+  const grid=el('div','grid grid-cols-2 gap-2 mb-4');
+  [['Agendamentos',validos.length,'no período'],['Cancelados',canc.length,pct(canc.length,validos.length)+' do total'],['Faltas',falt.length,pct(falt.length,validos.length)+' do total'],['Reagendamentos',reag.length,(new Set(reag.map(e=>e.ag.id))).size+' agendamento(s)']].forEach(([l,v,sub])=>{
+    const c=el('div','rounded-xl p-3 bg-white shadow-sm'); c.style.border='1px solid var(--rose-light)';
+    c.innerHTML=`<p class="text-xs opacity-60">${l}</p><p class="text-2xl font-bold">${v}</p><p class="text-xs opacity-50">${sub}</p>`; grid.appendChild(c);
+  });
+  wrap.appendChild(grid);
+  // por origem
+  wrap.appendChild(el('p','text-sm font-semibold mb-2','Quem motivou'));
+  const ob=el('div','rounded-2xl p-3 mb-4 bg-white shadow-sm'); ob.style.border='1px solid var(--hairline)';
+  ['cliente','dona','profissional'].forEach(o=>{
+    const c1=canc.filter(e=>e.origem===o).length, r1=reag.filter(e=>e.origem===o).length, f1=o==='cliente'?falt.length:0;
+    const l=el('div','flex justify-between text-sm mb-2');
+    l.innerHTML=`<span class="font-medium">${ORIGENS[o]}</span><span class="opacity-80">${c1} cancelou · ${r1} reagendou${o==='cliente'?' · '+f1+' faltou':''}</span>`; ob.appendChild(l);
+  });
+  if(erros.length){ const l=el('div','flex justify-between text-xs opacity-60'); l.innerHTML=`<span>Erros de marcação (excluídos)</span><span>${erros.length}</span>`; ob.appendChild(l); }
+  wrap.appendChild(ob);
+  // motivos por origem
+  wrap.appendChild(el('p','text-sm font-semibold mb-2','Motivos mais comuns'));
+  ['cliente','dona','profissional'].forEach(o=>{
+    const evs=ev.filter(e=>e.origem===o||(o==='cliente'&&e.kind==='falta')); if(!evs.length) return;
+    const cont={}; evs.forEach(e=>{ const k=e.motivo||'Outro'; cont[k]=(cont[k]||0)+1; });
+    const arr=Object.entries(cont).sort((a,b)=>b[1]-a[1]);
+    const box=el('div','rounded-xl p-3 mb-3 bg-white shadow-sm'); box.style.border='1px solid var(--hairline)';
+    box.appendChild(el('p','text-xs font-semibold mb-2','Por parte de: '+ORIGENS[o]+' ('+evs.length+')'));
+    arr.forEach(([m,n])=>{
+      const w=Math.max(4,Math.round(n/evs.length*100));
+      const l=el('div','mb-2'); l.innerHTML=`<div class="flex justify-between text-xs"><span>${m}</span><b>${n}</b></div><div style="height:5px;border-radius:5px;background:var(--rose-light);margin-top:3px"><div style="height:5px;border-radius:5px;background:var(--rose);width:${w}%"></div></div>`; box.appendChild(l);
+    });
+    wrap.appendChild(box);
+  });
+  // em cima da hora e receita em risco
+  const tarde=canc.concat(falt).filter(e=>e.origem==='cliente' && (e.kind==='falta' || (e.horasAntes!=null && e.horasAntes<24)));
+  const valorAg=ag=>ag.valor>0?ag.valor:(((serviceById(ag.service)||{}).prices||[0])[0]||0);
+  const risco=tarde.reduce((a,e)=>a+valorAg(e.ag),0);
+  wrap.appendChild(el('p','text-sm font-semibold mb-2','Em cima da hora (cliente)'));
+  const tb=el('div','rounded-xl p-3 mb-4 bg-white shadow-sm text-sm'); tb.style.border='1px solid var(--amber-border)';
+  tb.innerHTML=`<b>${tarde.length}</b> cancelamento(s)/falta(s) com menos de 24h de aviso<br><span class="text-xs opacity-60">Horário vazio estimado: <b>${fmtMoney(risco)}</b> (valor combinado ou 1º valor do serviço)</span>`;
+  wrap.appendChild(tb);
+  // clientes que mais cancelam
+  const porCli={}; ev.filter(e=>e.origem==='cliente'||e.kind==='falta').forEach(e=>{ const k=e.ag.clientName||'(sem nome)'; porCli[k]=porCli[k]||{c:0,r:0,f:0}; if(e.kind==='falta') porCli[k].f++; else if(e.kind==='reagendamento') porCli[k].r++; else porCli[k].c++; });
+  const topCli=Object.entries(porCli).sort((a,b)=>(b[1].c+b[1].r+b[1].f)-(a[1].c+a[1].r+a[1].f)).slice(0,6);
+  if(topCli.length){
+    wrap.appendChild(el('p','text-sm font-semibold mb-2','Clientes com mais ocorrências'));
+    const cb=el('div','rounded-xl p-3 mb-4 bg-white shadow-sm'); cb.style.border='1px solid var(--hairline)';
+    topCli.forEach(([n,v])=>{ const l=el('div','flex justify-between text-sm mb-1'); l.innerHTML=`<span>${n}</span><span class="text-xs opacity-70">${v.c} canc. · ${v.r} reag. · ${v.f} faltas</span>`; cb.appendChild(l); });
+    wrap.appendChild(cb);
+  }
+  // dia da semana
+  const dias=['Dom','Seg','Ter','Qua','Qui','Sex','Sáb']; const porDia=[0,0,0,0,0,0,0];
+  canc.concat(falt).forEach(e=>{ porDia[new Date(e.ag.date+'T00:00:00').getDay()]++; });
+  if(canc.length+falt.length){
+    wrap.appendChild(el('p','text-sm font-semibold mb-2','Cancelamentos e faltas por dia da semana'));
+    const mx=Math.max(...porDia,1); const db=el('div','flex items-end gap-2 mb-5 rounded-xl p-3 bg-white shadow-sm'); db.style.border='1px solid var(--hairline)'; db.style.height='110px';
+    porDia.forEach((n,i)=>{ const c=el('div','flex-1 text-center text-xs'); c.innerHTML=`<div style="height:${Math.round(n/mx*60)+2}px;background:var(--rose);border-radius:4px 4px 0 0;margin-bottom:4px"></div><b>${n}</b><br><span class="opacity-60">${dias[i]}</span>`; db.appendChild(c); });
+    wrap.appendChild(db);
+  }
+  // últimas ocorrências
+  wrap.appendChild(el('p','text-sm font-semibold mb-2','Últimas ocorrências'));
+  const lastBox=el('div','space-y-2');
+  ev.sort((a,b)=>(b.ts||0)-(a.ts||0)).slice(0,15).forEach(e=>{
+    const kindLabel={cancelamento:'Cancelou',falta:'Faltou',reagendamento:'Reagendou',erro:'Erro de marcação'}[e.kind];
+    const r=el('div','rounded-lg px-3 py-2 bg-white text-xs'); r.style.border='1px solid var(--hairline)';
+    r.innerHTML=`<b>${e.ag.clientName||'(sem nome)'}</b> · ${kindLabel} (${ORIGENS[e.origem]||e.origem}) · ${fmtDM(e.ts)}<br><span class="opacity-70">${e.motivo||''}${e.obs?' — '+e.obs.replace(/</g,'&lt;'):''}</span>`; lastBox.appendChild(r);
+  });
+  wrap.appendChild(lastBox);
+  return wrap;
+}
 function renderReports(){
   const wrap=el('div');
   wrap.appendChild(backButton(goHome));
@@ -2945,6 +3140,8 @@ function renderReports(){
   });
   wrap.appendChild(periodRow);
 
+  const agBtn = el('button','tap w-full text-center py-3 rounded-xl text-sm font-medium mb-3','Cancelamentos e reagendamentos →');
+  agBtn.style.background='var(--amber-light)'; agBtn.style.color='var(--amber)'; agBtn.onclick=goAgAnalise; wrap.appendChild(agBtn);
   const exportBtn = el('button','tap w-full text-center py-3 rounded-xl text-sm font-medium mb-4','Exportar CSV (todo o histórico)');
   exportBtn.style.background='var(--rose-light)'; exportBtn.style.color='var(--rose-dark)';
   exportBtn.onclick=exportCsv;
