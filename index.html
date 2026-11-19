@@ -441,14 +441,136 @@ function updateClientLastVisit(clientId, rec){
   const c = clients.find(c=>c.id===clientId);
   if(c){ Object.assign(c, patch); if(usingLocal) saveLocalClients(); }
 }
-function createClient(name, whatsapp, cb){
-  const id = 'c_' + Date.now() + '_' + Math.random().toString(36).slice(2,8);
-  const rec = { name:name.trim(), whatsapp:(whatsapp||'').trim(), createdAt:Date.now(), lastServiceAt:null, lastServiceLabel:null, birthday:null, routines:[] };
+function createClient(name, whatsapp, cb, extra){
+  const id = 'c_' + Date.now() + '_' + Math.random().toString(36).slice(2,8) + Math.random().toString(36).slice(2,4);
+  const rec = Object.assign({ name:name.trim(), whatsapp:(whatsapp||'').trim(), createdAt:Date.now(), lastServiceAt:null, lastServiceLabel:null, birthday:null, routines:[] }, extra||{});
   if(db && !usingLocal){ db.collection('clientes').doc(id).set(rec).catch(()=>{}); }
   clients.unshift({id, ...rec});
   if(usingLocal) saveLocalClients();
   cb && cb({id, ...rec});
 }
+
+/* ---------- Foto da cliente + importacao de contatos ---------- */
+function avatarHtml(c,px){
+  px=px||40;
+  if(c && c.foto) return '<img alt="" src="'+c.foto+'" style="width:'+px+'px;height:'+px+'px;border-radius:50%;object-fit:cover;flex:none">';
+  const ini=((c&&c.name)||'?').trim().charAt(0).toUpperCase();
+  return '<div style="width:'+px+'px;height:'+px+'px;border-radius:50%;background:var(--rose-light);color:var(--rose-dark);display:flex;align-items:center;justify-content:center;font-size:'+Math.round(px*0.42)+'px;flex:none">'+ini+'</div>';
+}
+function fotoDeArquivo(file, cb){
+  const r=new FileReader();
+  r.onload=()=>{ const img=new Image(); img.onload=()=>{
+      const s=Math.min(img.width,img.height), cv=document.createElement('canvas'); cv.width=cv.height=160;
+      cv.getContext('2d').drawImage(img,(img.width-s)/2,(img.height-s)/2,s,s,0,0,160,160);
+      cb(cv.toDataURL('image/jpeg',0.75)); };
+    img.onerror=()=>showToast('Não consegui abrir essa foto'); img.src=r.result; };
+  r.readAsDataURL(file);
+}
+function definirFotoCliente(id, file){ if(!file) return; fotoDeArquivo(file, d=>updateClient(id,{foto:d})); }
+function foneBonito(raw){
+  let d=String(raw||'').replace(/\D/g,''); if(!d) return '';
+  if(d.length<=9) d='5521'+(d.length===8?'9':'')+d; else if(d.length<=11) d='55'+d;
+  return d.length===13 ? '+'+d.slice(0,2)+' '+d.slice(2,4)+' '+d.slice(4,9)+'-'+d.slice(9) : '+'+d;
+}
+function lerContatosTexto(nome, txt){
+  const out=[];
+  if(/\.json$/i.test(nome)){ JSON.parse(txt).forEach(o=>{ if(o&&o.nome) out.push({nome:String(o.nome).trim(), tel:foneBonito(o.telefone), foto:o.foto||null}); }); }
+  else if(/\.vcf$/i.test(nome)){
+    txt.replace(/\r?\n[ \t]/g,'').split('BEGIN:VCARD').slice(1).forEach(c=>{
+      const fn=(c.match(/^FN[^:]*:(.*)$/m)||[])[1], tel=(c.match(/^TEL[^:]*:(.*)$/m)||[])[1];
+      if(fn && fn.trim()) out.push({nome:fn.trim(), tel:foneBonito(tel), foto:null});
+    });
+  } else {
+    const sep = txt.indexOf(';')>-1 ? ';' : ',';
+    txt.split(/\r?\n/).slice(1).forEach(l=>{ const a=l.split(sep); if(a[0] && a[0].trim()) out.push({nome:a[0].trim().replace(/^"|"$/g,''), tel:foneBonito(a[1]), foto:null}); });
+  }
+  return out;
+}
+function importarContatosArquivo(file){
+  if(!file) return;
+  const r=new FileReader();
+  r.onload=()=>{
+    let lista; try{ lista=lerContatosTexto(file.name, String(r.result)); }catch(e){ showToast('Arquivo não reconhecido'); return; }
+    const vcf=/\.vcf$/i.test(file.name);
+    state.importPrev=lista.map(x=>{
+      const k=chaveDuplicada(x.nome), m=clients.find(c=>chaveDuplicada(c.name)===k)||null;
+      const outroNum = !!(m && m.whatsapp && x.tel && String(m.whatsapp).replace(/\D/g,'')!==x.tel.replace(/\D/g,''));
+      const novidade = m ? ((x.tel && !m.whatsapp) || (x.foto && !m.foto)) : true;
+      return Object.assign({}, x, { match:m, outroNum, sel: !vcf && !outroNum && !!novidade && !!(x.tel||x.foto) });
+    });
+    state.importBusca=''; render();
+  };
+  r.readAsText(file,'utf-8');
+}
+function importarContatosAplicar(){
+  const sel=(state.importPrev||[]).filter(x=>x.sel); let novas=0, atual=0;
+  sel.forEach(x=>{
+    if(x.match){
+      const patch={}; if(x.tel) patch.whatsapp=x.tel; if(x.foto && !x.match.foto) patch.foto=x.foto;
+      if(Object.keys(patch).length){
+        if(db && !usingLocal) db.collection('clientes').doc(x.match.id).update(patch).catch(()=>{});
+        Object.assign(x.match,patch); atual++;
+      }
+    } else { createClient(x.nome, x.tel, null, x.foto?{foto:x.foto}:{}); novas++; }
+  });
+  if(usingLocal) saveLocalClients();
+  state.importPrev=null; showToast(novas+' nova(s), '+atual+' atualizada(s)'); render();
+}
+function renderImportar(){
+  const box=el('div','rounded-xl p-3 mb-4 bg-white shadow-sm'); box.style.border='1px solid var(--hairline)';
+  const prev=state.importPrev;
+  if(!prev){
+    box.appendChild(el('p','text-sm font-semibold mb-1','Importar contatos'));
+    box.appendChild(el('p','text-xs opacity-60 mb-2','Escolha o arquivo de contatos (.json, .vcf ou .csv). Você confere a lista antes de salvar.'));
+    const lab=el('label','tap block text-center text-sm py-2 rounded-lg text-white','Escolher arquivo'); lab.style.background='var(--rose)';
+    const inp=el('input'); inp.type='file'; inp.accept='.json,.vcf,.csv,text/vcard,text/csv,application/json'; inp.style.display='none';
+    inp.onchange=(e)=>importarContatosArquivo(e.target.files[0]); lab.appendChild(inp); box.appendChild(lab);
+    return box;
+  }
+  const busca=_norm(state.importBusca||'');
+  const nSel=prev.filter(x=>x.sel).length;
+  box.appendChild(el('p','text-sm font-semibold mb-1',prev.length+' contato(s) no arquivo · '+nSel+' marcado(s)'));
+  box.appendChild(el('p','text-xs opacity-60 mb-2','Só o que estiver marcado entra no app. Os outros contatos não são guardados.'));
+  const q=el('input','w-full rounded-lg px-2 py-2 text-sm mb-2'); q.style.border='1px solid var(--hairline)'; q.placeholder='Buscar pelo nome'; q.value=state.importBusca||'';
+  q.onchange=(e)=>{ state.importBusca=e.target.value; render(); }; box.appendChild(q);
+  const bar=el('div','flex flex-wrap gap-2 mb-2');
+  const b1=el('button','tap text-xs px-3 py-2 rounded-lg','Marcar todos os que têm telefone'); b1.style.background='var(--cream)';
+  b1.onclick=()=>{ prev.forEach(x=>{ if(x.tel && !x.outroNum) x.sel=true; }); render(); };
+  const b2=el('button','tap text-xs px-3 py-2 rounded-lg','Desmarcar todos'); b2.style.background='var(--cream)'; b2.onclick=()=>{ prev.forEach(x=>x.sel=false); render(); };
+  bar.appendChild(b1); bar.appendChild(b2); box.appendChild(bar);
+  const list=el('div','space-y-1'); list.style.maxHeight='55vh'; list.style.overflowY='auto';
+  prev.filter(x=>!busca || _norm(x.nome).indexOf(busca)>-1).slice(0,200).forEach(x=>{
+    const row=el('label','flex items-center gap-2 rounded-lg px-2 py-2 text-sm'); row.style.background='var(--cream)';
+    const cb=el('input'); cb.type='checkbox'; cb.checked=!!x.sel; cb.onchange=()=>{ x.sel=cb.checked; render(); };
+    const av=el('span','',avatarHtml({name:x.nome,foto:x.foto},32));
+    const info=el('span','flex-1');
+    const st = x.match ? (x.outroNum ? 'já cadastrada, com outro número ('+x.match.whatsapp+')' : 'já cadastrada: completa telefone/foto') : 'cliente nova';
+    info.innerHTML='<b>'+x.nome+'</b><br><span class="text-xs opacity-60">'+(x.tel||'sem telefone')+' · '+st+'</span>';
+    const prim=_norm(x.nome).split(' ')[0];
+    const cands=clients.filter(c=>_norm(c.name).split(' ')[0]===prim && (!x.match || c.id!==x.match.id));
+    if(cands.length || x.match){
+      const sel=el('select','block w-full rounded-lg px-1 py-1 text-xs mt-1'); sel.style.border='1px solid var(--hairline)';
+      sel.onclick=(e)=>e.stopPropagation();
+      const o0=el('option','', x.match && chaveDuplicada(x.match.name)===chaveDuplicada(x.nome) ? 'Já cadastrada: '+x.match.name : 'Cadastrar como cliente nova'); o0.value=''; sel.appendChild(o0);
+      const lista=cands.slice(); if(x.match && chaveDuplicada(x.match.name)!==chaveDuplicada(x.nome)) lista.unshift(x.match);
+      lista.forEach(c=>{ const o=el('option','','É a mesma que «'+c.name+'» ('+clienteHistorico(c).visitas+' visita(s))'); o.value=c.id; if(x.match && x.match.id===c.id) o.selected=true; sel.appendChild(o); });
+      sel.onchange=()=>{
+        const m=sel.value ? clients.find(c=>c.id===sel.value) : (clients.find(c=>chaveDuplicada(c.name)===chaveDuplicada(x.nome))||null);
+        x.match=m; x.outroNum=!!(m && m.whatsapp && x.tel && String(m.whatsapp).replace(/\D/g,'')!==x.tel.replace(/\D/g,''));
+        x.sel=!x.outroNum && !!(x.tel||x.foto); render();
+      };
+      info.appendChild(sel);
+    }
+    row.appendChild(cb); row.appendChild(av); row.appendChild(info); list.appendChild(row);
+  });
+  box.appendChild(list);
+  const act=el('div','flex gap-2 mt-3');
+  const ok=el('button','tap flex-1 text-sm py-2 rounded-lg text-white','Importar '+nSel+' marcado(s)'); ok.style.background='var(--rose)'; ok.disabled=!nSel; ok.onclick=importarContatosAplicar;
+  const no=el('button','tap text-sm px-3 py-2 rounded-lg','Cancelar'); no.style.background='var(--cream)'; no.onclick=()=>{ state.importPrev=null; render(); };
+  act.appendChild(ok); act.appendChild(no); box.appendChild(act);
+  return box;
+}
+
 function chaveDuplicada(n){ return _norm(n).replace(/\bmncs\b/g,'').replace(/\s+/g,' ').trim().replace(/y/g,'i'); }
 function duplicadasSugeridas(){
   const g={}; clients.forEach(c=>{ const k=chaveDuplicada(c.name); if(k) (g[k]=g[k]||[]).push(c); });
@@ -2329,7 +2451,8 @@ function renderClients(){
   const wrap=el('div');
   wrap.appendChild(backButton(goHome));
   wrap.appendChild(el('h2','text-xl font-bold mb-1','Clientes'));
-  wrap.appendChild(el('p','text-xs opacity-60 mb-4','Toque numa cliente pra editar WhatsApp, aniversário e rotina de serviços'));
+  wrap.appendChild(el('p','text-xs opacity-60 mb-4','Toque numa cliente pra editar foto, WhatsApp, aniversário e rotina de serviços'));
+  if(state.role!=='pro') wrap.appendChild(renderImportar());
   if(!clients.length){ wrap.appendChild(el('p','text-sm opacity-60','Nenhuma cliente cadastrada ainda.')); return wrap; }
   if(state.role!=='pro'){ const dup=renderDuplicadas(); if(dup) wrap.appendChild(dup); }
   const sorted=clients.slice().sort((a,b)=>{
@@ -2345,9 +2468,12 @@ function renderClients(){
     row.style.border = overdue ? '1px solid var(--amber-border)' : '1px solid var(--hairline)';
     const top = el('button','tap w-full text-left flex items-center justify-between');
     top.innerHTML = `
-      <div>
+      <div class="flex items-center gap-3">
+        ${avatarHtml(c,40)}
+        <div>
         <p class="font-medium text-sm">${c.name} ${overdue?'<span style="color:var(--amber)">· atrasada</span>':''}</p>
         <p class="text-xs opacity-60">${d===null?'primeira visita ainda não concluída':d+' dia(s) · '+(c.lastServiceLabel||'')}</p>
+        </div>
       </div>
       <span class="text-xs opacity-40">${expanded?'▲':'▼'}</span>
     `;
@@ -2356,6 +2482,14 @@ function renderClients(){
 
     if(expanded){
       const edit = el('div','mt-3 pt-3 space-y-3'); edit.style.borderTop='1px solid var(--hairline)';
+
+      const fotoRow=el('div','flex items-center gap-3');
+      fotoRow.appendChild(el('span','',avatarHtml(c,64)));
+      const fotoBtns=el('div','flex flex-col gap-1');
+      const fl=el('label','tap text-xs px-3 py-2 rounded-lg text-white text-center',c.foto?'Trocar foto':'Colocar foto'); fl.style.background='var(--rose)';
+      const fi=el('input'); fi.type='file'; fi.accept='image/*'; fi.style.display='none'; fi.onchange=(e)=>definirFotoCliente(c.id,e.target.files[0]); fl.appendChild(fi); fotoBtns.appendChild(fl);
+      if(c.foto){ const rf=el('button','tap text-xs px-3 py-1 rounded-lg opacity-60','Remover foto'); rf.onclick=()=>updateClient(c.id,{foto:null}); fotoBtns.appendChild(rf); }
+      fotoRow.appendChild(fotoBtns); edit.appendChild(fotoRow);
 
       const waInput = el('input','w-full rounded-lg px-2 py-2 text-sm'); waInput.style.border='1px solid var(--hairline)';
       waInput.placeholder='WhatsApp'; waInput.value=c.whatsapp||''; waInput.onchange=(e)=>setClientField(c.id,'whatsapp',e.target.value);
