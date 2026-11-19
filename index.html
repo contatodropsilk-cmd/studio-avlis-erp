@@ -108,6 +108,7 @@ const SERVICES = [
   {id:'outro',        label:'Outro serviço',                cat:'Outro', prices:[], estimatedMin:60},
 ];
 function studioPctFor(id){ const sv=(typeof serviceById==='function')?serviceById(id):null; return (sv && sv.studioPct>0) ? sv.studioPct : (config.comissaoProfissionalPercent||0); }
+function proFaz(sv){ return state.role!=='pro' || (sv.proPay>0); }
 const SERVICES_BASE = SERVICES.map(x=>JSON.parse(JSON.stringify(x)));
 let __svcCfgKey = '';
 function applyServiceConfig(){
@@ -1631,7 +1632,7 @@ function renderPickService(){
   const wrap=el('div');
   wrap.appendChild(backButton(goHome));
   wrap.appendChild(el('h2','text-xl font-bold mb-4','Qual serviço?'));
-  const visSvc = SERVICES.filter(s=>!(s.cat===PACOTE_CAT && state.role==='pro'));
+  const visSvc = SERVICES.filter(s=>s.cat!==PACOTE_CAT || state.role!=='pro').filter(proFaz);
   const cats=[...new Set(visSvc.map(s=>s.cat))];
   cats.forEach(cat=>{
     wrap.appendChild(el('p','text-xs uppercase tracking-wide opacity-50 mt-4 mb-2',cat));
@@ -1663,7 +1664,7 @@ function renderTimer(){
   const addSvcBtn=el('button','tap text-xs underline opacity-70 mt-2', state.timer.showAddSvc ? 'fechar' : '+ outro serviço neste atendimento'); addSvcBtn.onclick=toggleAddSvc; wrap.appendChild(addSvcBtn);
   if(state.timer.showAddSvc){
     const g=el('div','grid grid-cols-2 gap-1 mt-2 text-left');
-    SERVICES.filter(sv=>sv.cat!==PACOTE_CAT && !state.timer.svcIds.includes(sv.id)).forEach(sv=>{
+    SERVICES.filter(sv=>sv.cat!==PACOTE_CAT && proFaz(sv) && !state.timer.svcIds.includes(sv.id)).forEach(sv=>{
       const b=el('button','tap text-xs rounded-lg px-2 py-2', sv.label); b.style.background='var(--cream)';
       b.onclick=()=>{ state.timer.showAddSvc=false; switchTimerService(sv.id); };
       g.appendChild(b);
@@ -2676,7 +2677,7 @@ function renderAgendaForm(){
 
   form.appendChild(el('p','text-xs uppercase tracking-wide opacity-50 mb-2 mt-2','Serviços (toque em um ou mais)'));
   const grid=el('div','grid grid-cols-2 gap-1 mb-3');
-  SERVICES.filter(s=>s.cat!==PACOTE_CAT).forEach(s=>{
+  SERVICES.filter(s=>s.cat!==PACOTE_CAT && proFaz(s)).forEach(s=>{
     const b=el('button','tap text-xs rounded-lg px-2 py-2', s.label);
     const on=(state.agenda.serviceIds||[]).includes(s.id);
     b.style.background = on ? 'var(--rose)' : 'var(--cream)';
