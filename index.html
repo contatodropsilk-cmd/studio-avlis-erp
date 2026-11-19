@@ -136,7 +136,7 @@ function applyServiceConfig(){
 }
 const COST_CHIPS = [0,10,20,30,50,70,100,150];
 const DEFAULT_CONFIG = {
-  custosFixos:1315, metaMin:4000, metaMax:5000, retiradaMin:2000, retiradaMax:3000,
+  custosFixos:1406.55, custosFixosItens:[{label:'Aluguel',valor:881},{label:'Água (média)',valor:173.45},{label:'IPTU',valor:52.10},{label:'Internet',valor:110},{label:'Luz (média)',valor:190}], metaMin:4000, metaMax:5000, retiradaMin:2000, retiradaMax:3000,
   reactivationTemplate: 'Oi {nome}! Tudo bem? Faz tempo que a gente não se vê por aqui no Studio Avlis 💕 Separei um horário especial pra você — quer agendar um retoque?',
   reminderTemplate: 'Oi {nome}! Passando pra lembrar do seu horário amanhã às {hora} ({servico}) aqui no Studio Avlis 💕 Te espero!',
   pontosPorReal: 10,
@@ -580,6 +580,7 @@ function computeEstoqueAlerts(){
   });
   return alerts;
 }
+function custosFixosTotal(){ const it=config.custosFixosItens; if(Array.isArray(it) && it.length) return Math.round(it.reduce((a,x)=>a+(+x.valor||0),0)*100)/100; return config.custosFixos||0; }
 function saveConfig(patch){
   config = Object.assign({}, config, patch);
   if(db && !usingLocal){ db.doc('config/geral').set(config).catch(()=>{}); }
@@ -2317,7 +2318,7 @@ function renderFinance(){
   const t = monthTotals(monthRecords);
   const monthCustos = custos.filter(c=>c.monthKey===mk);
   const totalCustosVariaveis = monthCustos.reduce((a,c)=>a+(c.value||0),0);
-  const sobra = t.margemServicos - (config.custosFixos||0) - totalCustosVariaveis;
+  const sobra = t.margemServicos - custosFixosTotal() - totalCustosVariaveis;
 
   const card1=el('div','rounded-2xl p-4 mb-4 shadow-sm'); card1.style.background='white'; card1.style.border='1px solid var(--rose-light)';
   card1.innerHTML = `<p class="text-xs uppercase tracking-wide opacity-60 mb-2">Faturamento do mês</p>
@@ -2336,7 +2337,7 @@ function renderFinance(){
   fixedRows.innerHTML = `
       <p class="flex justify-between"><span class="opacity-70">Produto usado em atendimento</span><b>${fmtMoney(t.custoProduto)}</b></p>
       <p class="flex justify-between"><span class="opacity-70">Parceira / comissão</span><b>${fmtMoney(t.custoParceira)}</b></p>
-      <p class="flex justify-between"><span class="opacity-70">Fixos (aluguel, luz, DAS...)</span><b>${fmtMoney(config.custosFixos)}</b></p>
+      <p class="flex justify-between"><span class="opacity-70">Fixos (aluguel, luz, DAS...)</span><b>${fmtMoney(custosFixosTotal())}</b></p>
   `;
   card2.appendChild(fixedRows);
   if(monthCustos.length){
@@ -2395,7 +2396,19 @@ function renderFinance(){
       row.appendChild(inp);
       return row;
     };
-    cfgCard.appendChild(field('Custos fixos mensais (R$)','custosFixos'));
+    { const fx=el('div'); fx.appendChild(el('label','block text-xs opacity-60 mb-1','Custos fixos mensais'));
+      const itens=(config.custosFixosItens||[]).map(x=>Object.assign({},x));
+      const salvar=(arr)=>saveConfig({custosFixosItens:arr, custosFixos:Math.round(arr.reduce((a,x)=>a+(+x.valor||0),0)*100)/100});
+      itens.forEach((it,i)=>{
+        const r=el('div','flex gap-2 mb-2');
+        const ni=el('input','rounded-lg px-2 py-1 text-sm'); ni.style.cssText='flex:1;border:1px solid var(--rose-light)'; ni.value=it.label; ni.onchange=e=>{ itens[i].label=e.target.value; salvar(itens); };
+        const vi=el('input','rounded-lg px-2 py-1 text-sm'); vi.style.cssText='width:96px;border:1px solid var(--rose-light)'; vi.type='text'; vi.inputMode='decimal'; vi.value=String(it.valor).replace('.',','); vi.onchange=e=>{ itens[i].valor=parseFloat(String(e.target.value).replace(',','.'))||0; salvar(itens); };
+        const rm=el('button','tap text-xs opacity-60','✕'); rm.onclick=()=>{ itens.splice(i,1); salvar(itens); };
+        r.appendChild(ni); r.appendChild(vi); r.appendChild(rm); fx.appendChild(r);
+      });
+      const add=el('button','tap text-xs underline opacity-70 mb-1','+ adicionar custo fixo'); add.onclick=()=>{ itens.push({label:'Novo custo',valor:0}); salvar(itens); }; fx.appendChild(add);
+      fx.appendChild(el('p','text-sm font-semibold mt-1','Total: '+fmtMoney(custosFixosTotal())));
+      cfgCard.appendChild(fx); }
     cfgCard.appendChild(field('Meta de faturamento — mínimo (R$)','metaMin'));
     cfgCard.appendChild(field('Meta de faturamento — máximo (R$)','metaMax'));
     cfgCard.appendChild(field('Retirada desejada — mínimo (R$)','retiradaMin'));
