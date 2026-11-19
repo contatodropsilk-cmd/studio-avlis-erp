@@ -438,6 +438,55 @@ function createClient(name, whatsapp, cb){
   if(usingLocal) saveLocalClients();
   cb && cb({id, ...rec});
 }
+function chaveDuplicada(n){ return _norm(n).replace(/\bmncs\b/g,'').replace(/\s+/g,' ').trim().replace(/y/g,'i'); }
+function duplicadasSugeridas(){
+  const g={}; clients.forEach(c=>{ const k=chaveDuplicada(c.name); if(k) (g[k]=g[k]||[]).push(c); });
+  return Object.values(g).filter(a=>a.length>1);
+}
+function unirClientes(keepId, dropId){
+  const keep=clients.find(c=>c.id===keepId), drop=clients.find(c=>c.id===dropId); if(!keep||!drop||keepId===dropId) return;
+  const dk=_norm(drop.name);
+  const touch=(arr,col)=>arr.forEach(x=>{
+    if(x.clientId===dropId || (x.clientName && _norm(x.clientName)===dk)){
+      const patch={clientId:keepId, clientName:keep.name};
+      if(db && !usingLocal && x.id) db.collection(col).doc(x.id).update(patch).catch(()=>{});
+      Object.assign(x,patch);
+    }
+  });
+  touch(records,'atendimentos'); touch(agendamentos,'agendamentos'); touch(pacotes,'pacotes');
+  const patch={};
+  if(!keep.whatsapp && drop.whatsapp) patch.whatsapp=drop.whatsapp;
+  if(!keep.birthday && drop.birthday) patch.birthday=drop.birthday;
+  if((drop.lastServiceAt||0)>(keep.lastServiceAt||0)){ patch.lastServiceAt=drop.lastServiceAt; patch.lastServiceLabel=drop.lastServiceLabel||null; }
+  if((drop.routines||[]).length) patch.routines=(keep.routines||[]).concat(drop.routines);
+  if(db && !usingLocal){
+    if(Object.keys(patch).length) db.collection('clientes').doc(keepId).update(patch).catch(()=>{});
+    db.collection('clientes').doc(dropId).delete().catch(()=>{});
+  }
+  Object.assign(keep,patch);
+  clients = clients.filter(c=>c.id!==dropId);
+  if(usingLocal){ saveLocalClients(); saveLocalRecords(); saveLocalAgendamentos(); saveLocalPacotes(); }
+  showToast('Cadastros unidos'); render();
+}
+function renderDuplicadas(){
+  const grupos=duplicadasSugeridas(); if(!grupos.length) return null;
+  const box=el('div','rounded-xl p-3 mb-4'); box.style.background='var(--amber-light)'; box.style.border='1px solid var(--amber-border)';
+  box.appendChild(el('p','text-sm font-semibold mb-1','Cadastros repetidos ('+grupos.length+')'));
+  box.appendChild(el('p','text-xs opacity-60 mb-2','Parecem ser a mesma cliente. Escolha o nome que fica; atendimentos, agendamentos e pacotes passam pra ele.'));
+  grupos.forEach(g=>{
+    const row=el('div','rounded-lg p-2 mb-2 bg-white');
+    const hs=g.map(c=>({c, h:clienteHistorico(c)}));
+    row.appendChild(el('p','text-xs opacity-70 mb-1', hs.map(x=>x.c.name+' ('+x.h.visitas+' visita(s))').join('  +  ')));
+    const btns=el('div','flex flex-wrap gap-2');
+    g.forEach(keep=>{
+      const b=el('button','tap text-xs px-3 py-2 rounded-lg text-white','Unir e manter «'+keep.name+'»'); b.style.background='var(--rose)';
+      b.onclick=()=>{ g.filter(x=>x.id!==keep.id).forEach(x=>unirClientes(keep.id,x.id)); };
+      btns.appendChild(b);
+    });
+    row.appendChild(btns); box.appendChild(row);
+  });
+  return box;
+}
 function updateClient(id, patch){
   if(db && !usingLocal){ db.collection('clientes').doc(id).update(patch).catch(()=>{}); }
   const c = clients.find(c=>c.id===id);
@@ -2271,6 +2320,7 @@ function renderClients(){
   wrap.appendChild(el('h2','text-xl font-bold mb-1','Clientes'));
   wrap.appendChild(el('p','text-xs opacity-60 mb-4','Toque numa cliente pra editar WhatsApp, aniversário e rotina de serviços'));
   if(!clients.length){ wrap.appendChild(el('p','text-sm opacity-60','Nenhuma cliente cadastrada ainda.')); return wrap; }
+  if(state.role!=='pro'){ const dup=renderDuplicadas(); if(dup) wrap.appendChild(dup); }
   const sorted=clients.slice().sort((a,b)=>{
     const da=a.lastServiceAt?daysSince(a.lastServiceAt):-1, db_=b.lastServiceAt?daysSince(b.lastServiceAt):-1;
     return db_-da;
