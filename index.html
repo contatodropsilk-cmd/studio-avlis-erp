@@ -1024,7 +1024,7 @@ function finishTimerPro(){
   const durationMin = Math.round(accumulated/60000);
   const stockUsage = state.timer.stockUsage.slice();
   const productCost = stockUsage.reduce((a,u)=>a+(u.custo||0),0);
-  const proOwnClient = !!state.timer.proOwnClient;
+  const proOwnClient = false;
   const proPrice = parseFloat(String(state.timer.proPrice||'').replace(',','.'))||0;
   const proSvcs = state.timer.svcIds.map(serviceById).filter(Boolean);
   const proTabelaPreco = proSvcs.reduce((a,x)=>a+(x.precoTabela||0),0);
@@ -1940,7 +1940,7 @@ function renderTimer(){
   else if(status==='paused'){ btnRow.appendChild(bigButton('Continuar','var(--rose)',resumeTimer)); btnRow.appendChild(bigButton('Finalizar atendimento','var(--green)', state.role==='pro'?finishTimerPro:finishTimer)); }
   wrap.appendChild(btnRow);
 
-  if(state.role==='pro'){
+  if(false){
     const own = el('div','text-left mt-6 pt-5'); own.style.borderTop='1px solid var(--hairline)';
     own.appendChild(el('p','text-sm font-semibold mb-2','De quem é essa cliente?'));
     const chips = el('div','flex gap-2 mb-2');
@@ -1968,7 +1968,7 @@ function renderTimer(){
       const list = el('div','space-y-1 mb-2');
       state.timer.stockUsage.forEach((u,i)=>{
         const row = el('div','flex items-center justify-between text-sm bg-white rounded-lg px-2 py-1'); row.style.border='1px solid var(--hairline)';
-        row.innerHTML = `<span>${iconLabel('box',u.nome+' · '+u.qty+u.unidade)}</span><span class="flex items-center gap-2"><b>${fmtMoney(u.custo)}</b></span>`;
+        row.innerHTML = `<span>${iconLabel('box',u.nome+' · '+u.qty+u.unidade)}</span><span class="flex items-center gap-2">${state.role==='pro'?'':'<b>'+fmtMoney(u.custo)+'</b>'}</span>`;
         const rm = el('button','tap text-xs opacity-50 ml-2','remover'); rm.onclick=()=>removeInsumoDuringService(i);
         row.lastChild.appendChild(rm);
         list.appendChild(row);
@@ -2869,7 +2869,7 @@ function renderAgendaItem(ag, detail){
     ${state.role!=='pro' && ag.bookedBy==='pro' ? `<p class="text-xs mt-1" style="color:var(--amber)">agendado por ${config.nomeProfissional}${ag.clienteDaProfissional?' · cliente dela (comissão)':''}</p>` : ''}
     ${historicoAgClienteHtml(ag)}
     ${(ag.status==='agendado'||ag.status==='confirmado') ? riscoHtml(ag) : ''}
-    ${ag.valor>0 ? `<p class="text-sm mt-1">Valor combinado: <b>${fmtMoney(ag.valor)}</b></p>`:''}
+    ${(ag.valor>0 && state.role!=='pro') ? `<p class="text-sm mt-1">Valor combinado: <b>${fmtMoney(ag.valor)}</b></p>`:''}
     ${(detail && (ag.serviceLabel||'').includes(' + ')) ? `<p class="text-xs opacity-70 mt-1">Serviços: ${ag.serviceLabel}</p>`:''}
     ${detail ? `<p class="text-sm mt-2"><b>Observação:</b> ${ag.note ? ag.note.replace(/</g,'&lt;') : '<span class="opacity-50">nenhuma</span>'}</p>` : (ag.note?`<p class="text-xs opacity-50 mt-1">${ag.note.replace(/</g,'&lt;')}</p>`:'')}
   `;
@@ -2981,16 +2981,15 @@ function renderAgendaForm(){
   form.appendChild(timeRow);
   form.appendChild(el('p','text-xs opacity-50 mb-3', 'termina às '+addMinutesToTime(state.agenda.startTime, state.agenda.durationMin)+' (duração em min, ajustável)'));
 
-  form.appendChild(el('p','text-xs uppercase tracking-wide opacity-50 mb-1','Valor combinado (R$, opcional)'));
   const valorInput=el('input','w-full rounded-lg px-2 py-2 text-sm mb-3'); valorInput.id='ag-valor'; valorInput.type='text'; valorInput.inputMode='decimal'; valorInput.style.border='1px solid var(--rose-light)';
   valorInput.placeholder='ex.: 650'; valorInput.value=state.agenda.valor||''; valorInput.oninput=(e)=>agendaSetValor(e.target.value);
-  form.appendChild(valorInput);
+  if(state.role!=='pro'){ form.appendChild(el('p','text-xs uppercase tracking-wide opacity-50 mb-1','Valor combinado (R$, opcional)')); form.appendChild(valorInput); }
   const noteInput = el('input','w-full rounded-lg px-2 py-2 text-sm mb-3');
-  noteInput.id='ag-note'; noteInput.style.border='1px solid var(--rose-light)'; noteInput.placeholder='Observação (ex: forma de pagamento combinada)';
+  noteInput.id='ag-note'; noteInput.style.border='1px solid var(--rose-light)'; noteInput.placeholder=state.role==='pro'?'Observação':'Observação (ex: forma de pagamento combinada)';
   noteInput.value = state.agenda.note||''; noteInput.oninput=(e)=>agendaSetNote(e.target.value);
   form.appendChild(noteInput);
 
-  if(state.role==='pro'){
+  if(false){
     const comRow=el('div','rounded-lg p-2 mb-3'); comRow.style.background='var(--amber-light)';
     const chk=el('label','flex items-center gap-2 text-xs');
     const cb=el('input'); cb.type='checkbox'; cb.checked=!!state.agenda.clienteDaProfissional; cb.onchange=(e)=>setClienteDaProfissional(e.target.checked);
