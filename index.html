@@ -74,10 +74,14 @@
 const SERVICES = [
   {id:'mecha_morena', label:'Mechas (morena iluminada)', cat:'Cabelo', prices:[400,450,500,550], defaultPartner:150, estimatedMin:330},
   {id:'mecha_loira',  label:'Mechas loiras',              cat:'Cabelo', prices:[500,550,600,650], defaultPartner:150, estimatedMin:330},
-  {id:'escova',       label:'Escova',                      cat:'Cabelo', prices:[60,70,75,85], estimatedMin:45},
-  {id:'coloracao_raiz',label:'Coloração de raiz',          cat:'Cabelo', prices:[130], estimatedMin:90},
-  {id:'corte',        label:'Corte',                       cat:'Cabelo', prices:[65], estimatedMin:45},
+  {id:'escova',       label:'Escova',                      cat:'Cabelo', prices:[65,60,70,75,85], defaultPartner:29.25, studioPct:35, estimatedMin:45},
+  {id:'coloracao_raiz',label:'Coloração de raiz',          cat:'Cabelo', prices:[130], defaultPartner:52, studioPct:35, estimatedMin:90},
+  {id:'corte',        label:'Corte',                       cat:'Cabelo', prices:[65], defaultPartner:29.25, studioPct:25, estimatedMin:45},
   {id:'tratamento',   label:'Tratamento',                  cat:'Cabelo', prices:[75,100,150,200], estimatedMin:60},
+  {id:'trat_wella',   label:'Tratamento Wella / L\'Oréal / Redken', cat:'Cabelo', prices:[80], defaultPartner:36, studioPct:35, estimatedMin:60},
+  {id:'trat_kerastase',label:'Tratamento Kérastase',       cat:'Cabelo', prices:[120], defaultPartner:54, studioPct:35, estimatedMin:60},
+  {id:'trat_escova_wella',label:'Tratamento + Escova Wella / L\'Oréal / Redken', cat:'Cabelo', prices:[140], defaultPartner:56, studioPct:35, estimatedMin:90},
+  {id:'trat_escova_kerastase',label:'Tratamento + Escova Kérastase', cat:'Cabelo', prices:[210], defaultPartner:84, studioPct:35, estimatedMin:90},
   {id:'progressiva',  label:'Progressiva/alisamento (parceira)', cat:'Cabelo', prices:[], commissionType:'percent40', estimatedMin:240},
   {id:'design',       label:'Design de sobrancelhas',      cat:'Sobrancelhas e cílios', prices:[37], estimatedMin:40},
   {id:'bucco',        label:'Buço',                        cat:'Sobrancelhas e cílios', prices:[17], estimatedMin:15},
@@ -87,6 +91,7 @@ const SERVICES = [
   {id:'henna',        label:'Henna',                       cat:'Sobrancelhas e cílios', prices:[27], estimatedMin:20},
   {id:'outro',        label:'Outro serviço',                cat:'Outro', prices:[], estimatedMin:60},
 ];
+function studioPctFor(id){ const sv=(typeof serviceById==='function')?serviceById(id):null; return (sv && sv.studioPct>0) ? sv.studioPct : (config.comissaoProfissionalPercent||0); }
 const SERVICES_BASE = SERVICES.map(x=>JSON.parse(JSON.stringify(x)));
 let __svcCfgKey = '';
 function applyServiceConfig(){
@@ -101,6 +106,7 @@ function applyServiceConfig(){
       if(Array.isArray(e.prices)) x.prices=e.prices;
       if(e.estimatedMin>0) x.estimatedMin=e.estimatedMin;
       if(e.defaultPartner!==undefined && e.defaultPartner!==null) x.defaultPartner=e.defaultPartner;
+      if(e.studioPct!==undefined && e.studioPct!==null) x.studioPct=e.studioPct;
     }
     return x;
   });
@@ -1483,7 +1489,7 @@ function renderTimer(){
       const priceIn=el('input','w-full rounded-lg px-2 py-2 text-sm'); priceIn.type='number'; priceIn.inputMode='decimal'; priceIn.placeholder='Quanto você cobrou (R$)'; priceIn.value=state.timer.proPrice||''; priceIn.oninput=(e)=>setProPrice(e.target.value);
       own.appendChild(priceIn);
       if(state.timer.proPriceError){ const er=el('p','text-xs mt-1','Coloca o valor que você cobrou pra finalizar.'); er.id='pro-price-error'; er.style.color='var(--danger)'; own.appendChild(er); }
-      own.appendChild(el('p','text-xs opacity-50 mt-1',`O studio fica com ${config.comissaoProfissionalPercent}% de comissão.`));
+      own.appendChild(el('p','text-xs opacity-50 mt-1',`O studio fica com ${studioPctFor(state.timer.activeSvc||(state.service&&state.service.id))}% de comissão.`));
     }
     wrap.appendChild(own);
   }
@@ -2005,6 +2011,8 @@ function saveServicos(){
     if(JSON.stringify(prices)!==JSON.stringify(b.prices||[])) entry.prices=prices;
     if(min!==b.estimatedMin) entry.estimatedMin=min;
     if(partTxt!==''){ const v=parseFloat(partTxt.replace(',','.')); if(!isNaN(v) && v!==(b.defaultPartner||0)) entry.defaultPartner=v; }
+    const pctTxt=g('sv-pct-'+b.id).trim();
+    if(pctTxt!==''){ const v=parseFloat(pctTxt.replace(',','.')); if(!isNaN(v) && v!==(b.studioPct||0)) entry.studioPct=v; }
     if(Object.keys(entry).length) ed[b.id]=entry;
   });
   const novos=(config.servicosNovos||[]).map(n=>({
@@ -2058,8 +2066,10 @@ function renderServicos(){
       const f2=field('Tempo (min)',pre+'min-'+sv.id,sv.estimatedMin,'num'); f2.style.flex='1'; row.appendChild(f2);
       card.appendChild(row);
       if(!isNovo && sv.cat==='Cabelo' && sv.commissionType!=='percent40'){
-        card.appendChild(field('Custo padrão com parceira (R$, opcional)','sv-part-'+sv.id,sv.defaultPartner||'','num'));
-      } else if(!isNovo){ const h=el('input'); h.type='hidden'; h.id='sv-part-'+sv.id; h.value=sv.defaultPartner!==undefined?sv.defaultPartner:''; card.appendChild(h); }
+        card.appendChild(field('Quanto pagamos à ajudante neste serviço (R$, opcional)','sv-part-'+sv.id,sv.defaultPartner||'','num'));
+        card.appendChild(field('Comissão do studio quando a cliente é da ajudante (%)','sv-pct-'+sv.id,sv.studioPct||'','num','vazio = '+(config.comissaoProfissionalPercent||0)+'% (padrão geral)'));
+      } else if(!isNovo){ const h=el('input'); h.type='hidden'; h.id='sv-part-'+sv.id; h.value=sv.defaultPartner!==undefined?sv.defaultPartner:''; card.appendChild(h);
+        const h2=el('input'); h2.type='hidden'; h2.id='sv-pct-'+sv.id; h2.value=sv.studioPct!==undefined?sv.studioPct:''; card.appendChild(h2); }
       if(isNovo){ const rm=el('button','tap text-xs underline mt-1','remover este serviço'); rm.style.color='var(--danger)'; rm.onclick=()=>removeServicoNovo(sv.id); card.appendChild(rm); }
       wrap.appendChild(card);
     });
@@ -2247,9 +2257,10 @@ function fechamentoDoMes(mk){
   const dela = recs.filter(r=>r.proOwnClient);
   const studio = recs.filter(r=>!r.proOwnClient);
   const sum=(arr,f)=>arr.reduce((a,r)=>a+(f(r)||0),0);
-  const pct = config.comissaoProfissionalPercent||0;
+  const pcts = dela.map(r=>studioPctFor(r.service));
+  const pct = pcts.length && pcts.every(x=>x===pcts[0]) ? pcts[0] : (pcts.length ? null : (config.comissaoProfissionalPercent||0));
   const fatDela = sum(dela,r=>r.proPrice);
-  const comissao = Math.round(fatDela*pct)/100;
+  const comissao = Math.round(dela.reduce((a,r)=>a+(r.proPrice||0)*studioPctFor(r.service)/100,0)*100)/100;
   const insumosDela = sum(dela,r=>r.productCost);
   const insumosStudio = sum(studio,r=>r.productCost);
   const repasse = comissao + (config.cobrarInsumosClientesDela ? insumosDela : 0);
@@ -2261,7 +2272,7 @@ function fechamentoMsg(mk, f){
   let m = `Oi ${nome}! Fechamento de ${monthLabel(mk)} no Studio Avlis:\n\n`;
   m += `Clientes do studio que você atendeu: ${f.studio.length}\n`;
   m += `Suas clientes: ${f.dela.length} (total cobrado ${fmtMoney(f.fatDela)})\n`;
-  m += `Comissão do studio (${f.pct}%): ${fmtMoney(f.comissao)}\n`;
+  m += `Comissão do studio${f.pct!==null?' ('+f.pct+'%)':' (por serviço)'}: ${fmtMoney(f.comissao)}\n`;
   if(config.cobrarInsumosClientesDela) m += `Insumos usados nas suas clientes: ${fmtMoney(f.insumosDela)}\n`;
   m += `\nTotal a repassar: ${fmtMoney(f.repasse)}\nQualquer dúvida me fala 💕`;
   return m;
@@ -2289,7 +2300,7 @@ function renderFechamento(){
   const card=el('div','rounded-2xl p-4 mb-3 bg-white shadow-sm text-sm'); card.style.border='1px solid var(--rose-light)';
   const line=(l,v,strong)=>`<div class="flex justify-between ${strong?'font-bold pt-2 mt-1':'mb-2'}" ${strong?'style="border-top:1px solid var(--rose-light)"':''}><span class="${strong?'':'opacity-60'}">${l}</span><span ${strong?'style="color:var(--rose-dark)"':''}>${v}</span></div>`;
   card.innerHTML = line('Faturado com as clientes dela', fmtMoney(f.fatDela))
-    + line(`Comissão do studio (${f.pct}%)`, fmtMoney(f.comissao))
+    + line(`Comissão do studio${f.pct!==null?' ('+f.pct+'%)':' (por serviço)'}`, fmtMoney(f.comissao))
     + line('Insumos nas clientes dela'+(config.cobrarInsumosClientesDela?'':' (não cobrado)'), fmtMoney(f.insumosDela))
     + line('Insumos nas clientes do studio', fmtMoney(f.insumosStudio))
     + line('Ela repassa ao studio', fmtMoney(f.repasse), true);
